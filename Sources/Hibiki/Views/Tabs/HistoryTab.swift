@@ -1,9 +1,13 @@
 import SwiftUI
 
-struct HistoryView: View {
-    @State private var historyManager = HistoryManager.shared
+struct HistoryTab: View {
+    private let historyManager = HistoryManager.shared
     @State private var playingEntryId: UUID?
     private let audioPlayer = StreamingAudioPlayer.shared
+
+    // Local copy of entries to avoid observation issues
+    @State private var entries: [HistoryEntry] = []
+    @State private var totalCost: String = "$0.000000"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -12,7 +16,7 @@ struct HistoryView: View {
                 Text("TTS History")
                     .font(.headline)
 
-                Text("(\(historyManager.entries.count) entries)")
+                Text("(\(entries.count) entries)")
                     .font(.caption)
                     .foregroundColor(.secondary)
 
@@ -21,19 +25,20 @@ struct HistoryView: View {
                 Button("Clear All") {
                     stopPlayback()
                     historyManager.clearAllHistory()
+                    refreshEntries()
                 }
-                .disabled(historyManager.entries.isEmpty)
+                .disabled(entries.isEmpty)
             }
             .padding()
 
             Divider()
 
             // Table or empty state
-            if historyManager.entries.isEmpty {
+            if entries.isEmpty {
                 emptyStateView
             } else {
                 HistoryTableView(
-                    entries: historyManager.entries,
+                    entries: entries,
                     playingEntryId: $playingEntryId,
                     onReplay: replayEntry,
                     onDelete: deleteEntry
@@ -44,7 +49,7 @@ struct HistoryView: View {
 
             // Footer with total cost
             HStack {
-                Text("Total cost: \(historyManager.formattedTotalCost)")
+                Text("Total cost: \(totalCost)")
                     .font(.caption)
                     .foregroundColor(.secondary)
 
@@ -59,7 +64,14 @@ struct HistoryView: View {
             }
             .padding()
         }
-        .frame(minWidth: 600, minHeight: 400)
+        .onAppear {
+            refreshEntries()
+        }
+    }
+
+    private func refreshEntries() {
+        entries = historyManager.entries
+        totalCost = historyManager.formattedTotalCost
     }
 
     private var emptyStateView: some View {
@@ -126,6 +138,7 @@ struct HistoryView: View {
             stopPlayback()
         }
         historyManager.deleteEntry(entry)
+        refreshEntries()
     }
 
     private func stopPlayback() {

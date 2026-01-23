@@ -7,7 +7,7 @@ struct HibikiApp: App {
 
     var body: some Scene {
         Settings {
-            SettingsView()
+            MainSettingsView()
                 .environmentObject(AppState.shared)
         }
     }

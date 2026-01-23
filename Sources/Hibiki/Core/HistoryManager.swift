@@ -1,9 +1,11 @@
 import Foundation
 
-@Observable
+/// History manager - NOT @Observable to avoid threading conflicts with SwiftUI observation.
+/// Views should maintain their own @State for entries and call refresh methods.
 final class HistoryManager {
     static let shared = HistoryManager()
 
+    /// Thread-safe access to entries. Always access from main thread.
     private(set) var entries: [HistoryEntry] = []
 
     private let maxEntries = 100
@@ -18,7 +20,7 @@ final class HistoryManager {
         appSupportDirectory.appendingPathComponent("history.json")
     }
 
-    private var audioDirectory: URL {
+    var audioDirectory: URL {
         appSupportDirectory.appendingPathComponent("audio", isDirectory: true)
     }
 
@@ -84,6 +86,15 @@ final class HistoryManager {
     func getAudioData(for entry: HistoryEntry) -> Data? {
         let audioURL = audioDirectory.appendingPathComponent(entry.audioFileName)
         return try? Data(contentsOf: audioURL)
+    }
+
+    func audioFileSize(for entry: HistoryEntry) -> Int64? {
+        let audioURL = audioDirectory.appendingPathComponent(entry.audioFileName)
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: audioURL.path),
+              let size = attributes[.size] as? Int64 else {
+            return nil
+        }
+        return size
     }
 
     // MARK: - Private Methods

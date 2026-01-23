@@ -22,10 +22,12 @@ struct LogEntry: Identifiable {
     }
 }
 
-@Observable
+/// Debug logger - NOT @Observable to avoid threading conflicts with SwiftUI observation.
+/// Views should maintain their own @State for entries and call refresh methods.
 final class DebugLogger {
     static let shared = DebugLogger()
 
+    /// Thread-safe access to entries. Always access from main thread.
     private(set) var entries: [LogEntry] = []
     private let maxEntries = 500
 

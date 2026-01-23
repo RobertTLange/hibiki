@@ -3,6 +3,7 @@ import SwiftUI
 struct MenuBarView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.openSettings) private var openSettings
+    @State private var hasAccessibility = true  // Assume true initially
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -45,7 +46,7 @@ struct MenuBarView: View {
             }
 
             // Permission status
-            if !PermissionManager.shared.hasAccessibilityPermission {
+            if !hasAccessibility {
                 Button("Grant Accessibility Permission") {
                     PermissionManager.shared.requestAccessibilityPermission()
                 }
@@ -67,6 +68,12 @@ struct MenuBarView: View {
         }
         .padding()
         .frame(width: 280)
+        .onAppear {
+            // Check permission when popover appears
+            DispatchQueue.main.async {
+                hasAccessibility = PermissionManager.shared.checkAccessibility()
+            }
+        }
     }
 
     private var statusColor: Color {
