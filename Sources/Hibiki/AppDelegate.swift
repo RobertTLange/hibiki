@@ -242,17 +242,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func installKeyboardMonitor() {
         guard keyboardMonitor == nil else { return }
 
-        keyboardMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
+        keyboardMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
             guard AppState.shared.isPlaying || AppState.shared.isSummarizing else { return }
 
-            // Check for 'S' key (stop)
-            if event.keyCode == 1 && event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty {
-                DispatchQueue.main.async {
-                    AppState.shared.stopPlayback()
+            // Check for Option key alone (stop) - triggered on flagsChanged
+            if event.type == .flagsChanged {
+                let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                // Option key pressed alone (no other modifiers)
+                if flags == .option {
+                    DispatchQueue.main.async {
+                        AppState.shared.stopPlayback()
+                    }
                 }
             }
             // Check for Escape key (cancel)
-            else if event.keyCode == 53 {
+            else if event.type == .keyDown && event.keyCode == 53 {
                 DispatchQueue.main.async {
                     AppState.shared.stopPlayback()
                 }

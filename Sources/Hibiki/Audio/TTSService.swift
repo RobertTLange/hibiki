@@ -23,6 +23,15 @@ final class TTSService: NSObject {
     private var responseHeaders: [AnyHashable: Any] = [:]
     private var inputText: String = ""
 
+    // Multi-chunk processing state
+    private var chunks: [String] = []
+    private var currentChunkIndex: Int = 0
+    private var totalInputTokens: Int = 0
+    private var isCancelled: Bool = false
+    private var currentVoice: TTSVoice = .coral
+    private var currentApiKey: String = ""
+    private var currentInstructions: String = ""
+
     func streamSpeech(
         text: String,
         voice: TTSVoice,
@@ -35,12 +44,13 @@ final class TTSService: NSObject {
         print("[Hibiki] TTSService.streamSpeech called")
         print("[Hibiki] Text length: \(text.count), voice: \(voice.rawValue)")
 
-        // Reset accumulated data for new request
+        // Reset all state for new request
         accumulatedAudioData = Data()
         inputTokens = 0
+        totalInputTokens = 0
         isTokenEstimated = false
         responseHeaders = [:]
-        inputText = text
+        isCancelled = false
 
         self.onAudioChunk = onAudioChunk
         self.onComplete = onComplete
@@ -52,22 +62,77 @@ final class TTSService: NSObject {
             return
         }
 
+        // Split text into chunks for processing
+        chunks = TextChunker.chunk(text)
+        currentChunkIndex = 0
+
+        print("[Hibiki] 📝 Split text into \(chunks.count) chunk(s)")
+        for (i, chunk) in chunks.enumerated() {
+            print("[Hibiki]   Chunk \(i + 1): \(chunk.count) chars")
+        }
+
+        guard !chunks.isEmpty else {
+            print("[Hibiki] ⚠️ No chunks to process (empty text)")
+            onComplete(TTSResult(audioData: Data(), inputTokens: 0, isTokenEstimated: false))
+            return
+        }
+
+        // Store parameters for sequential chunk processing
+        currentVoice = voice
+        currentApiKey = apiKey
+        currentInstructions = instructions
+
+        // Start processing first chunk
+        processNextChunk()
+    }
+
+    /// Process the next chunk in the queue
+    private func processNextChunk() {
+        guard !isCancelled else {
+            print("[Hibiki] ⚠️ Chunk processing cancelled")
+            return
+        }
+
+        guard currentChunkIndex < chunks.count else {
+            // All chunks complete
+            print("[Hibiki] ✅ All \(chunks.count) chunk(s) complete, total tokens: \(totalInputTokens)")
+            let result = TTSResult(
+                audioData: accumulatedAudioData,
+                inputTokens: totalInputTokens,
+                isTokenEstimated: isTokenEstimated
+            )
+            accumulatedAudioData = Data()
+            totalInputTokens = 0
+            onComplete?(result)
+            return
+        }
+
+        let chunkText = chunks[currentChunkIndex]
+        print("[Hibiki] 🔄 Processing chunk \(currentChunkIndex + 1)/\(chunks.count) (\(chunkText.count) chars)")
+
+        streamSingleChunk(text: chunkText)
+    }
+
+    /// Stream a single chunk of text to the TTS API
+    private func streamSingleChunk(text: String) {
+        inputText = text  // Store for token estimation fallback
+
         guard let url = URL(string: "https://api.openai.com/v1/audio/speech") else {
             print("[Hibiki] ❌ Invalid URL")
-            onError(TTSError.invalidURL)
+            onError?(TTSError.invalidURL)
             return
         }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(currentApiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let body: [String: Any] = [
             "model": "gpt-4o-mini-tts",
             "input": text,
-            "voice": voice.rawValue,
-            "instructions": instructions,
+            "voice": currentVoice.rawValue,
+            "instructions": currentInstructions,
             "response_format": "pcm"
         ]
 
@@ -75,11 +140,11 @@ final class TTSService: NSObject {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
         } catch {
             print("[Hibiki] ❌ JSON encoding error: \(error)")
-            onError(error)
+            onError?(error)
             return
         }
 
-        print("[Hibiki] 🌐 Making API request to OpenAI...")
+        print("[Hibiki] 🌐 Making API request to OpenAI for chunk \(currentChunkIndex + 1)...")
 
         // Create session with delegate for streaming
         session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
@@ -88,10 +153,15 @@ final class TTSService: NSObject {
     }
 
     func cancel() {
+        isCancelled = true
         currentTask?.cancel()
         currentTask = nil
         session?.invalidateAndCancel()
         session = nil
+        // Reset chunk state
+        chunks = []
+        currentChunkIndex = 0
+        totalInputTokens = 0
     }
 }
 
@@ -109,20 +179,26 @@ extension TTSService: URLSessionDataDelegate {
                 print("[Hibiki] Request cancelled")
                 accumulatedAudioData = Data()
                 inputTokens = 0
+                totalInputTokens = 0
                 isTokenEstimated = false
                 inputText = ""
+                chunks = []
+                currentChunkIndex = 0
                 return
             }
             print("[Hibiki] ❌ Network error: \(error.localizedDescription)")
             accumulatedAudioData = Data()
             inputTokens = 0
+            totalInputTokens = 0
             isTokenEstimated = false
             inputText = ""
+            chunks = []
+            currentChunkIndex = 0
             onError?(error)
         } else {
             // Try to parse the response for usage info (fallback check)
             parseResponseForUsage()
-            
+
             // If we still don't have tokens from headers or body, estimate from input text
             if inputTokens == 0 && !inputText.isEmpty {
                 // Rough estimation: ~4 characters per token for English text
@@ -132,13 +208,18 @@ extension TTSService: URLSessionDataDelegate {
                 print("[Hibiki] 📊 Estimated input tokens from text length: \(inputTokens) (from \(inputText.count) chars)")
             }
 
-            print("[Hibiki] ✅ Request completed successfully, total audio: \(accumulatedAudioData.count) bytes, inputTokens: \(inputTokens)\(isTokenEstimated ? " (estimated)" : "")")
-            let result = TTSResult(audioData: accumulatedAudioData, inputTokens: inputTokens, isTokenEstimated: isTokenEstimated)
-            accumulatedAudioData = Data()
+            // Accumulate tokens from this chunk
+            totalInputTokens += inputTokens
+            print("[Hibiki] ✅ Chunk \(currentChunkIndex + 1) complete, chunk tokens: \(inputTokens), running total: \(totalInputTokens)")
+
+            // Reset per-chunk state
             inputTokens = 0
-            isTokenEstimated = false
             inputText = ""
-            onComplete?(result)
+            responseHeaders = [:]
+
+            // Move to next chunk
+            currentChunkIndex += 1
+            processNextChunk()
         }
     }
 
