@@ -6,9 +6,30 @@ struct ConfigurationTab: View {
     @State private var showKey = false
     @State private var hasAccessibility = false
 
+    private let asciiArt = """
+         _     _ _     _ _    _
+        | |   (_) |   (_) |  (_)
+        | |__  _| |__  _| | ___
+        | '_ \\| | '_ \\| | |/ / |
+        | | | | | |_) | |   <| |
+        |_| |_|_|_.__/|_|_|\\_\\_|
+        """
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                // ASCII Art Header
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(asciiArt)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity)
+                    Text("Designed by RobertTLange")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.bottom, 4)
+
                 // API Key Section
                 GroupBox("OpenAI API Key") {
                     VStack(alignment: .leading, spacing: 8) {

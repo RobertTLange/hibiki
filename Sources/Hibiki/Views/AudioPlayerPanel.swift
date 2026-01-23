@@ -89,7 +89,7 @@ struct AudioPlayerPanel: View {
                     Button(action: { appState.stopPlayback() }) {
                         HStack(spacing: 4) {
                             Text("Stop")
-                            Text("S")
+                            Text("⌥")
                                 .font(.system(size: 10, weight: .medium))
                                 .padding(.horizontal, 4)
                                 .padding(.vertical, 2)

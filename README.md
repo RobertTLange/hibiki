@@ -1,5 +1,14 @@
 # Hibiki
 
+```
+ _     _ _     _ _    _
+| |   (_) |   (_) |  (_)
+| |__  _| |__  _| | ___
+| '_ \| | '_ \| | |/ / |
+| | | | | |_) | |   <| |
+|_| |_|_|_.__/|_|_|\_\_|
+```
+
 A macOS menu bar app that reads selected text aloud using OpenAI's text-to-speech API.
 
 ## Features
