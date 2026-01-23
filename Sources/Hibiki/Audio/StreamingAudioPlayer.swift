@@ -3,7 +3,8 @@ import AVFoundation
 final class StreamingAudioPlayer {
     static let shared = StreamingAudioPlayer()
 
-    private let engine = AVAudioEngine()
+    // Expose engine for audio level monitoring
+    private(set) var audioEngine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
 
     // PCM format matching OpenAI TTS output: 24kHz, 16-bit signed int, mono
@@ -19,6 +20,12 @@ final class StreamingAudioPlayer {
     private var hasStartedPlayback = false
     private var isEngineRunning = false
 
+    // Playback completion tracking
+    private var scheduledBufferCount = 0
+    private var completedBufferCount = 0
+    private var isStreamFinished = false
+    var onPlaybackComplete: (() -> Void)?
+
     private init() {
         pcmFormat = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
@@ -31,16 +38,16 @@ final class StreamingAudioPlayer {
     }
 
     private func setupAudioEngine() {
-        engine.attach(playerNode)
+        audioEngine.attach(playerNode)
 
         // Connect player to main mixer
-        engine.connect(
+        audioEngine.connect(
             playerNode,
-            to: engine.mainMixerNode,
+            to: audioEngine.mainMixerNode,
             format: pcmFormat
         )
 
-        engine.prepare()
+        audioEngine.prepare()
     }
 
     func enqueue(pcmData: Data) {
@@ -94,7 +101,7 @@ final class StreamingAudioPlayer {
         do {
             if !isEngineRunning {
                 print("[Hibiki] 🎵 Starting audio engine...")
-                try engine.start()
+                try audioEngine.start()
                 isEngineRunning = true
                 print("[Hibiki] ✅ Audio engine started")
             }
@@ -115,7 +122,30 @@ final class StreamingAudioPlayer {
     }
 
     private func scheduleBuffer(_ buffer: AVAudioPCMBuffer) {
-        playerNode.scheduleBuffer(buffer, completionHandler: nil)
+        scheduledBufferCount += 1
+        playerNode.scheduleBuffer(buffer) { [weak self] in
+            self?.bufferQueue.async {
+                self?.completedBufferCount += 1
+                self?.checkPlaybackComplete()
+            }
+        }
+    }
+
+    /// Call this when the TTS stream has finished sending data
+    func markStreamComplete() {
+        bufferQueue.async { [weak self] in
+            self?.isStreamFinished = true
+            self?.checkPlaybackComplete()
+        }
+    }
+
+    private func checkPlaybackComplete() {
+        // Only fire completion when stream is done AND all buffers played
+        if isStreamFinished && completedBufferCount >= scheduledBufferCount && scheduledBufferCount > 0 {
+            DispatchQueue.main.async { [weak self] in
+                self?.onPlaybackComplete?()
+            }
+        }
     }
 
     func stop() {
@@ -123,7 +153,7 @@ final class StreamingAudioPlayer {
             guard let self = self else { return }
             self.playerNode.stop()
             if self.isEngineRunning {
-                self.engine.stop()
+                self.audioEngine.stop()
                 self.isEngineRunning = false
             }
             self.pendingBuffers.removeAll()
@@ -135,6 +165,9 @@ final class StreamingAudioPlayer {
     func reset() {
         stop()
         bufferQueue.async { [weak self] in
+            self?.scheduledBufferCount = 0
+            self?.completedBufferCount = 0
+            self?.isStreamFinished = false
             self?.setupAudioEngine()
         }
     }
