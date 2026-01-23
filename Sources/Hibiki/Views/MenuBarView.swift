@@ -60,7 +60,7 @@ struct MenuBarView: View {
             }
             .keyboardShortcut(",", modifiers: .command)
 
-            Button("Quit Tyler") {
+            Button("Quit Hibiki") {
                 NSApp.terminate(nil)
             }
             .keyboardShortcut("q", modifiers: .command)

@@ -31,7 +31,7 @@ final class DebugLogger {
 
     private init() {}
 
-    func log(_ message: String, level: LogLevel = .info, source: String = "Tyler") {
+    func log(_ message: String, level: LogLevel = .info, source: String = "Hibiki") {
         let entry = LogEntry(
             timestamp: Date(),
             level: level,
@@ -40,7 +40,7 @@ final class DebugLogger {
         )
 
         // Also print to console for Xcode debugging
-        print("[Tyler] [\(level.rawValue)] [\(source)] \(message)")
+        print("[Hibiki] [\(level.rawValue)] [\(source)] \(message)")
 
         DispatchQueue.main.async {
             self.entries.append(entry)
@@ -52,19 +52,19 @@ final class DebugLogger {
         }
     }
 
-    func debug(_ message: String, source: String = "Tyler") {
+    func debug(_ message: String, source: String = "Hibiki") {
         log(message, level: .debug, source: source)
     }
 
-    func info(_ message: String, source: String = "Tyler") {
+    func info(_ message: String, source: String = "Hibiki") {
         log(message, level: .info, source: source)
     }
 
-    func warning(_ message: String, source: String = "Tyler") {
+    func warning(_ message: String, source: String = "Hibiki") {
         log(message, level: .warning, source: source)
     }
 
-    func error(_ message: String, source: String = "Tyler") {
+    func error(_ message: String, source: String = "Hibiki") {
         log(message, level: .error, source: source)
     }
 

@@ -2,7 +2,7 @@ import SwiftUI
 import KeyboardShortcuts
 
 @main
-struct TylerApp: App {
+struct HibikiApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {

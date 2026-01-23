@@ -1,15 +1,15 @@
 #!/bin/bash
 set -e
 
-echo "Building Tyler..."
+echo "Building Hibiki..."
 swift build
 
-APP_DIR=".build/Tyler.app"
+APP_DIR=".build/Hibiki.app"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 
 # Copy executable
-cp .build/debug/Tyler "$APP_DIR/Contents/MacOS/Tyler"
+cp .build/debug/Hibiki "$APP_DIR/Contents/MacOS/Hibiki"
 
 # Create Info.plist
 cat > "$APP_DIR/Contents/Info.plist" << 'EOF'
@@ -18,15 +18,15 @@ cat > "$APP_DIR/Contents/Info.plist" << 'EOF'
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Tyler</string>
+    <string>Hibiki</string>
     <key>CFBundleIdentifier</key>
-    <string>com.superlisten.tyler</string>
+    <string>com.superlisten.hibiki</string>
     <key>CFBundleVersion</key>
     <string>1.0.0</string>
     <key>CFBundleShortVersionString</key>
     <string>1.0</string>
     <key>CFBundleExecutable</key>
-    <string>Tyler</string>
+    <string>Hibiki</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>
@@ -34,7 +34,7 @@ cat > "$APP_DIR/Contents/Info.plist" << 'EOF'
     <key>LSUIElement</key>
     <true/>
     <key>NSAccessibilityUsageDescription</key>
-    <string>Tyler needs accessibility permission to read selected text from other applications.</string>
+    <string>Hibiki needs accessibility permission to read selected text from other applications.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSPrincipalClass</key>
@@ -43,13 +43,13 @@ cat > "$APP_DIR/Contents/Info.plist" << 'EOF'
 </plist>
 EOF
 
-echo "Built Tyler.app at: $APP_DIR"
+echo "Built Hibiki.app at: $APP_DIR"
 
 # Optionally launch
 if [ "$1" == "--run" ]; then
     # Kill existing instances
-    pkill -f "Tyler.app" 2>/dev/null || true
+    pkill -f "Hibiki.app" 2>/dev/null || true
     sleep 1
     open "$APP_DIR"
-    echo "Tyler.app launched"
+    echo "Hibiki.app launched"
 fi

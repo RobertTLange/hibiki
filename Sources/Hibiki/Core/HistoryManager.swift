@@ -11,7 +11,7 @@ final class HistoryManager {
 
     private var appSupportDirectory: URL {
         let paths = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-        return paths[0].appendingPathComponent("Tyler", isDirectory: true)
+        return paths[0].appendingPathComponent("Hibiki", isDirectory: true)
     }
 
     private var historyFile: URL {
@@ -38,7 +38,7 @@ final class HistoryManager {
         do {
             try audioData.write(to: audioURL)
         } catch {
-            print("[Tyler] Failed to save audio file: \(error)")
+            print("[Hibiki] Failed to save audio file: \(error)")
         }
 
         let entry = HistoryEntry(
@@ -107,7 +107,7 @@ final class HistoryManager {
             let data = try encoder.encode(entries)
             try data.write(to: historyFile)
         } catch {
-            print("[Tyler] Failed to save history: \(error)")
+            print("[Hibiki] Failed to save history: \(error)")
         }
     }
 
@@ -120,7 +120,7 @@ final class HistoryManager {
             decoder.dateDecodingStrategy = .iso8601
             entries = try decoder.decode([HistoryEntry].self, from: data)
         } catch {
-            print("[Tyler] Failed to load history: \(error)")
+            print("[Hibiki] Failed to load history: \(error)")
         }
     }
 

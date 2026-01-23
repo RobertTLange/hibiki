@@ -32,8 +32,8 @@ final class TTSService: NSObject {
         onComplete: @escaping (TTSResult) -> Void,
         onError: @escaping (Error) -> Void
     ) {
-        print("[Tyler] TTSService.streamSpeech called")
-        print("[Tyler] Text length: \(text.count), voice: \(voice.rawValue)")
+        print("[Hibiki] TTSService.streamSpeech called")
+        print("[Hibiki] Text length: \(text.count), voice: \(voice.rawValue)")
 
         // Reset accumulated data for new request
         accumulatedAudioData = Data()
@@ -47,13 +47,13 @@ final class TTSService: NSObject {
         self.onError = onError
 
         guard !apiKey.isEmpty else {
-            print("[Tyler] ❌ API key is empty in TTSService")
+            print("[Hibiki] ❌ API key is empty in TTSService")
             onError(TTSError.missingAPIKey)
             return
         }
 
         guard let url = URL(string: "https://api.openai.com/v1/audio/speech") else {
-            print("[Tyler] ❌ Invalid URL")
+            print("[Hibiki] ❌ Invalid URL")
             onError(TTSError.invalidURL)
             return
         }
@@ -74,12 +74,12 @@ final class TTSService: NSObject {
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
         } catch {
-            print("[Tyler] ❌ JSON encoding error: \(error)")
+            print("[Hibiki] ❌ JSON encoding error: \(error)")
             onError(error)
             return
         }
 
-        print("[Tyler] 🌐 Making API request to OpenAI...")
+        print("[Hibiki] 🌐 Making API request to OpenAI...")
 
         // Create session with delegate for streaming
         session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
@@ -97,7 +97,7 @@ final class TTSService: NSObject {
 
 extension TTSService: URLSessionDataDelegate {
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        print("[Tyler] 📦 Received data chunk: \(data.count) bytes")
+        print("[Hibiki] 📦 Received data chunk: \(data.count) bytes")
         accumulatedAudioData.append(data)
         onAudioChunk?(data)
     }
@@ -106,14 +106,14 @@ extension TTSService: URLSessionDataDelegate {
         if let error = error {
             // Check if it's a cancellation
             if (error as NSError).code == NSURLErrorCancelled {
-                print("[Tyler] Request cancelled")
+                print("[Hibiki] Request cancelled")
                 accumulatedAudioData = Data()
                 inputTokens = 0
                 isTokenEstimated = false
                 inputText = ""
                 return
             }
-            print("[Tyler] ❌ Network error: \(error.localizedDescription)")
+            print("[Hibiki] ❌ Network error: \(error.localizedDescription)")
             accumulatedAudioData = Data()
             inputTokens = 0
             isTokenEstimated = false
@@ -129,10 +129,10 @@ extension TTSService: URLSessionDataDelegate {
                 // This is a common approximation for GPT tokenizers
                 inputTokens = max(1, inputText.count / 4)
                 isTokenEstimated = true
-                print("[Tyler] 📊 Estimated input tokens from text length: \(inputTokens) (from \(inputText.count) chars)")
+                print("[Hibiki] 📊 Estimated input tokens from text length: \(inputTokens) (from \(inputText.count) chars)")
             }
 
-            print("[Tyler] ✅ Request completed successfully, total audio: \(accumulatedAudioData.count) bytes, inputTokens: \(inputTokens)\(isTokenEstimated ? " (estimated)" : "")")
+            print("[Hibiki] ✅ Request completed successfully, total audio: \(accumulatedAudioData.count) bytes, inputTokens: \(inputTokens)\(isTokenEstimated ? " (estimated)" : "")")
             let result = TTSResult(audioData: accumulatedAudioData, inputTokens: inputTokens, isTokenEstimated: isTokenEstimated)
             accumulatedAudioData = Data()
             inputTokens = 0
@@ -150,24 +150,24 @@ extension TTSService: URLSessionDataDelegate {
         // If we still don't have tokens, it means the header wasn't present
         // Log for debugging purposes
         if inputTokens == 0 {
-            print("[Tyler] ⚠️ Input tokens still 0 - checking if response body contains error JSON")
+            print("[Hibiki] ⚠️ Input tokens still 0 - checking if response body contains error JSON")
             
             // Only try to parse as JSON if it looks like an error response (not binary audio)
             if let responseString = String(data: accumulatedAudioData, encoding: .utf8),
                responseString.hasPrefix("{") {
                 let preview = String(responseString.prefix(500))
-                print("[Tyler] 📄 Response preview (possible error): \(preview)")
+                print("[Hibiki] 📄 Response preview (possible error): \(preview)")
                 
                 if let json = try? JSONSerialization.jsonObject(with: accumulatedAudioData) as? [String: Any] {
                     // Check for error response
                     if let error = json["error"] as? [String: Any] {
-                        print("[Tyler] ❌ API returned error in body: \(error)")
+                        print("[Hibiki] ❌ API returned error in body: \(error)")
                     }
                     // Check for usage in body (unlikely for TTS but just in case)
                     if let usage = json["usage"] as? [String: Any],
                        let tokens = usage["input_tokens"] as? Int {
                         inputTokens = tokens
-                        print("[Tyler] 📊 Input tokens from response body: \(inputTokens)")
+                        print("[Hibiki] 📊 Input tokens from response body: \(inputTokens)")
                     }
                 }
             }
@@ -176,16 +176,16 @@ extension TTSService: URLSessionDataDelegate {
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         if let httpResponse = response as? HTTPURLResponse {
-            print("[Tyler] 📡 HTTP response: \(httpResponse.statusCode)")
-            print("[Tyler] 📡 Content-Type: \(httpResponse.allHeaderFields["Content-Type"] ?? "unknown")")
+            print("[Hibiki] 📡 HTTP response: \(httpResponse.statusCode)")
+            print("[Hibiki] 📡 Content-Type: \(httpResponse.allHeaderFields["Content-Type"] ?? "unknown")")
 
             // Store headers for later usage extraction
             responseHeaders = httpResponse.allHeaderFields
 
             // Log all headers for debugging
-            print("[Tyler] 📡 Response headers:")
+            print("[Hibiki] 📡 Response headers:")
             for (key, value) in httpResponse.allHeaderFields {
-                print("[Tyler]   \(key): \(value)")
+                print("[Hibiki]   \(key): \(value)")
             }
 
             // Extract usage from headers if available
@@ -193,7 +193,7 @@ extension TTSService: URLSessionDataDelegate {
             extractUsageFromHeaders(httpResponse.allHeaderFields)
 
             if httpResponse.statusCode != 200 {
-                print("[Tyler] ❌ API error: HTTP \(httpResponse.statusCode)")
+                print("[Hibiki] ❌ API error: HTTP \(httpResponse.statusCode)")
                 onError?(TTSError.apiError(statusCode: httpResponse.statusCode))
                 completionHandler(.cancel)
                 return
@@ -224,23 +224,23 @@ extension TTSService: URLSessionDataDelegate {
             if let value = headerDict[headerName] {
                 if let intValue = value as? Int {
                     inputTokens = intValue
-                    print("[Tyler] 📊 Input tokens from header '\(headerName)': \(inputTokens)")
+                    print("[Hibiki] 📊 Input tokens from header '\(headerName)': \(inputTokens)")
                     return
                 } else if let stringValue = value as? String, let intValue = Int(stringValue) {
                     inputTokens = intValue
-                    print("[Tyler] 📊 Input tokens from header '\(headerName)': \(inputTokens)")
+                    print("[Hibiki] 📊 Input tokens from header '\(headerName)': \(inputTokens)")
                     return
                 }
             }
         }
         
         // Log available headers for debugging to help identify the correct one
-        print("[Tyler] ⚠️ No input token header found. Available headers with numeric values:")
+        print("[Hibiki] ⚠️ No input token header found. Available headers with numeric values:")
         for (key, value) in headerDict {
             if let strVal = value as? String, Int(strVal) != nil {
-                print("[Tyler]   - \(key): \(strVal)")
+                print("[Hibiki]   - \(key): \(strVal)")
             } else if value is Int {
-                print("[Tyler]   - \(key): \(value)")
+                print("[Hibiki]   - \(key): \(value)")
             }
         }
     }

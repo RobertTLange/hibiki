@@ -1,4 +1,4 @@
-# Tyler
+# Hibiki
 
 A macOS menu bar app that reads selected text aloud using OpenAI's text-to-speech API.
 
@@ -23,13 +23,13 @@ A macOS menu bar app that reads selected text aloud using OpenAI's text-to-speec
 ```bash
 # Clone the repository
 git clone <repo-url>
-cd tyler
+cd hibiki
 
 # Build the app
 ./build.sh
 
 # Run the app
-open .build/Tyler.app
+open .build/Hibiki.app
 ```
 
 ### Development
@@ -44,7 +44,7 @@ swift run
 
 ## Setup
 
-1. **Launch Tyler** - The app appears as a speaker icon in your menu bar
+1. **Launch Hibiki** - The app appears as a speaker icon in your menu bar
 
 2. **Grant Accessibility Permission**
    - Click the menu bar icon and select "Settings..."
@@ -70,11 +70,11 @@ swift run
 
 ### Text not being captured from Chrome/web browsers
 
-Some applications (like Chrome) don't properly expose selected text via the accessibility API. Tyler automatically falls back to using the clipboard method (simulating Cmd+C) when this happens.
+Some applications (like Chrome) don't properly expose selected text via the accessibility API. Hibiki automatically falls back to using the clipboard method (simulating Cmd+C) when this happens.
 
 ### Debug Logs
 
-Open Settings and scroll to the Debug Logs section to see detailed logs of what Tyler is doing. This can help diagnose issues with:
+Open Settings and scroll to the Debug Logs section to see detailed logs of what Hibiki is doing. This can help diagnose issues with:
 - Accessibility permissions
 - Text selection detection
 - API connectivity
@@ -89,8 +89,8 @@ Open Settings and scroll to the Debug Logs section to see detailed logs of what 
 ## Architecture
 
 ```
-Sources/Tyler/
-├── TylerApp.swift           # App entry point
+Sources/Hibiki/
+├── HibikiApp.swift           # App entry point
 ├── AppDelegate.swift        # Menu bar setup, window management
 ├── Core/
 │   ├── AppState.swift       # Main application state

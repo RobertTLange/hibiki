@@ -48,7 +48,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         // Create menu
         menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "Tyler TTS", action: nil, keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Hibiki TTS", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
 
         let statusMenuItem = NSMenuItem(title: "Ready - Press ⌥F to speak", action: nil, keyEquivalent: "")
@@ -59,7 +59,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem(title: "History...", action: #selector(openHistory), keyEquivalent: "h"))
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Quit Tyler", action: #selector(quitApp), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: "Quit Hibiki", action: #selector(quitApp), keyEquivalent: "q"))
 
         statusItem.menu = menu
 
@@ -68,7 +68,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             button.title = "T"
 
             // Try SF Symbol
-            if let image = NSImage(systemSymbolName: "speaker.fill", accessibilityDescription: "Tyler TTS") {
+            if let image = NSImage(systemSymbolName: "speaker.fill", accessibilityDescription: "Hibiki TTS") {
                 image.size = NSSize(width: 18, height: 18)
                 image.isTemplate = true
                 button.image = image
@@ -99,7 +99,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 backing: .buffered,
                 defer: false
             )
-            settingsWindow?.title = "Tyler Settings"
+            settingsWindow?.title = "Hibiki Settings"
             settingsWindow?.contentView = NSHostingView(rootView: settingsView)
             settingsWindow?.center()
             settingsWindow?.isReleasedWhenClosed = false
@@ -125,7 +125,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 backing: .buffered,
                 defer: false
             )
-            historyWindow?.title = "Tyler History"
+            historyWindow?.title = "Hibiki History"
             historyWindow?.contentView = NSHostingView(rootView: historyView)
             historyWindow?.center()
             historyWindow?.isReleasedWhenClosed = false

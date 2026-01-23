@@ -2,21 +2,21 @@
 import PackageDescription
 
 let package = Package(
-    name: "Tyler",
+    name: "Hibiki",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "Tyler", targets: ["Tyler"])
+        .executable(name: "Hibiki", targets: ["Hibiki"])
     ],
     dependencies: [
         .package(url: "https://github.com/sindresorhus/KeyboardShortcuts", from: "2.0.0"),
     ],
     targets: [
         .executableTarget(
-            name: "Tyler",
+            name: "Hibiki",
             dependencies: ["KeyboardShortcuts"],
-            path: "Sources/Tyler",
+            path: "Sources/Hibiki",
             exclude: ["Resources/Info.plist"]
         )
     ]

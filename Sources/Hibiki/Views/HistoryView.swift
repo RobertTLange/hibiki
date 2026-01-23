@@ -92,7 +92,7 @@ struct HistoryView: View {
 
         // Get audio data and play
         guard let audioData = historyManager.getAudioData(for: entry) else {
-            print("[Tyler] Failed to load audio for history entry")
+            print("[Hibiki] Failed to load audio for history entry")
             return
         }
 
