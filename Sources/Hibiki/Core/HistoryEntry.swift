@@ -1,6 +1,6 @@
 import Foundation
 
-struct HistoryEntry: Identifiable, Codable {
+struct HistoryEntry: Identifiable, Codable, Sendable {
     let id: UUID
     let timestamp: Date
     let text: String
@@ -35,6 +35,10 @@ struct HistoryEntry: Identifiable, Codable {
             return String(text.prefix(100)) + "..."
         }
         return text
+    }
+
+    var wordCount: Int {
+        text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count
     }
 }
 

@@ -17,7 +17,10 @@ let package = Package(
             name: "Hibiki",
             dependencies: ["KeyboardShortcuts"],
             path: "Sources/Hibiki",
-            exclude: ["Resources/Info.plist"]
+            exclude: ["Resources/Info.plist"],
+            resources: [
+                .copy("hibiki.png")
+            ]
         )
     ]
 )

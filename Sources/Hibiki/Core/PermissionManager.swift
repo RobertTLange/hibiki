@@ -1,18 +1,16 @@
 import Cocoa
 import ApplicationServices
 
-@Observable
+/// Permission manager - NOT @Observable to avoid conflicts with SwiftUI observation.
+/// Views should maintain their own @State for permission status and call checkAccessibility() to update.
 final class PermissionManager {
     static let shared = PermissionManager()
 
-    var hasAccessibilityPermission = false
+    private init() {}
 
-    private init() {
-        checkAllPermissions()
-    }
-
-    func checkAllPermissions() {
-        hasAccessibilityPermission = AXIsProcessTrusted()
+    /// Check if accessibility permission is granted. Call this from main thread.
+    func checkAccessibility() -> Bool {
+        return AXIsProcessTrusted()
     }
 
     func requestAccessibilityPermission() {

@@ -7,8 +7,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
     private var menu: NSMenu!
-    private var settingsWindow: NSWindow?
-    private var historyWindow: NSWindow?
+    private var mainWindow: NSWindow?
     private var audioPlayerPanel: NSPanel?
     private var playingObserver: AnyCancellable?
     private var keyboardMonitor: Any?
@@ -20,6 +19,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
 
+        // Set the app icon
+        setupAppIcon()
+
         // Hide dock icon - agent app behavior
         NSApp.setActivationPolicy(.accessory)
 
@@ -29,8 +31,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Register default hotkey shortcut
         setupDefaultHotkey()
 
-        // Check permissions on launch
-        PermissionManager.shared.checkAllPermissions()
+        // Check permissions on launch (just log the result, don't need to store it)
+        let hasAccess = PermissionManager.shared.checkAccessibility()
+        print("[Hibiki] Accessibility permission on launch: \(hasAccess)")
 
         // Observe playing state to show/hide audio player panel
         playingObserver = AppState.shared.$isPlaying
@@ -42,6 +45,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     self?.hideAudioPlayerPanel()
                 }
             }
+    }
+
+    private func setupAppIcon() {
+        if let iconURL = Bundle.main.url(forResource: "hibiki", withExtension: "png"),
+           let iconImage = NSImage(contentsOf: iconURL) {
+            NSApp.applicationIconImage = iconImage
+        }
     }
 
     /// Returns true if this is the only instance, false if another instance is already running
@@ -72,7 +82,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ","))
-        menu.addItem(NSMenuItem(title: "History...", action: #selector(openHistory), keyEquivalent: "h"))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit Hibiki", action: #selector(quitApp), keyEquivalent: "q"))
 
@@ -104,50 +113,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Temporarily become a regular app to accept keyboard input
         NSApp.setActivationPolicy(.regular)
 
-        if settingsWindow == nil {
-            let settingsView = SettingsView()
+        if mainWindow == nil {
+            let mainView = MainSettingsView()
                 .environmentObject(AppState.shared)
 
-            settingsWindow = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 520, height: 700),
+            mainWindow = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 750, height: 600),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable],
                 backing: .buffered,
                 defer: false
             )
-            settingsWindow?.title = "Hibiki Settings"
-            settingsWindow?.contentView = NSHostingView(rootView: settingsView)
-            settingsWindow?.center()
-            settingsWindow?.isReleasedWhenClosed = false
-
-            // When window closes, go back to accessory mode
-            settingsWindow?.delegate = self
+            mainWindow?.title = "Hibiki"
+            mainWindow?.contentView = NSHostingView(rootView: mainView)
+            mainWindow?.center()
+            mainWindow?.isReleasedWhenClosed = false
+            mainWindow?.delegate = self
         }
 
-        settingsWindow?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    @objc private func openHistory() {
-        // Temporarily become a regular app to accept keyboard input
-        NSApp.setActivationPolicy(.regular)
-
-        if historyWindow == nil {
-            let historyView = HistoryView()
-
-            historyWindow = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
-                styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                backing: .buffered,
-                defer: false
-            )
-            historyWindow?.title = "Hibiki History"
-            historyWindow?.contentView = NSHostingView(rootView: historyView)
-            historyWindow?.center()
-            historyWindow?.isReleasedWhenClosed = false
-            historyWindow?.delegate = self
-        }
-
-        historyWindow?.makeKeyAndOrderFront(nil)
+        mainWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -266,16 +249,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // MARK: - NSWindowDelegate
 
     func windowWillClose(_ notification: Notification) {
-        // Return to accessory mode when all windows are closed
+        // Return to accessory mode when main window closes
         if let closingWindow = notification.object as? NSWindow,
-           closingWindow == settingsWindow || closingWindow == historyWindow {
-            // Only go back to accessory mode if no other windows are visible
-            let settingsVisible = settingsWindow?.isVisible == true && settingsWindow != closingWindow
-            let historyVisible = historyWindow?.isVisible == true && historyWindow != closingWindow
-
-            if !settingsVisible && !historyVisible {
-                NSApp.setActivationPolicy(.accessory)
-            }
+           closingWindow == mainWindow {
+            NSApp.setActivationPolicy(.accessory)
         }
     }
 }
