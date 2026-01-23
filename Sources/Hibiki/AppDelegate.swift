@@ -11,6 +11,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var audioPlayerPanel: NSPanel?
     private var playingObserver: AnyCancellable?
     private var summarizingObserver: AnyCancellable?
+    private var translatingObserver: AnyCancellable?
     private var keyboardMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -42,7 +43,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .sink { [weak self] isPlaying in
                 if isPlaying {
                     self?.showAudioPlayerPanel()
-                } else if !AppState.shared.isSummarizing {
+                } else if !AppState.shared.isSummarizing && !AppState.shared.isTranslating {
                     self?.hideAudioPlayerPanel()
                 }
             }
@@ -53,7 +54,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .sink { [weak self] isSummarizing in
                 if isSummarizing {
                     self?.showAudioPlayerPanel()
-                } else if !AppState.shared.isPlaying {
+                } else if !AppState.shared.isPlaying && !AppState.shared.isTranslating {
+                    self?.hideAudioPlayerPanel()
+                }
+            }
+
+        // Also observe translating state to show panel during translation
+        translatingObserver = AppState.shared.$isTranslating
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] isTranslating in
+                if isTranslating {
+                    self?.showAudioPlayerPanel()
+                } else if !AppState.shared.isPlaying && !AppState.shared.isSummarizing {
                     self?.hideAudioPlayerPanel()
                 }
             }
@@ -176,6 +188,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if KeyboardShortcuts.getShortcut(for: .triggerSummarizeTTS) == nil {
             KeyboardShortcuts.setShortcut(.init(.f, modifiers: [.shift, .option]), for: .triggerSummarizeTTS)
         }
+
+        // Set default for translate+TTS (Option + L)
+        if KeyboardShortcuts.getShortcut(for: .triggerTranslateTTS) == nil {
+            KeyboardShortcuts.setShortcut(.init(.l, modifiers: [.option]), for: .triggerTranslateTTS)
+        }
+
+        // Set default for summarize+translate+TTS (Shift + Option + L)
+        if KeyboardShortcuts.getShortcut(for: .triggerSummarizeTranslateTTS) == nil {
+            KeyboardShortcuts.setShortcut(.init(.l, modifiers: [.shift, .option]), for: .triggerSummarizeTranslateTTS)
+        }
     }
 
     // MARK: - Audio Player Panel
@@ -243,7 +265,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard keyboardMonitor == nil else { return }
 
         keyboardMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
-            guard AppState.shared.isPlaying || AppState.shared.isSummarizing else { return }
+            guard AppState.shared.isPlaying || AppState.shared.isSummarizing || AppState.shared.isTranslating else { return }
 
             // Check for Option key alone (stop) - triggered on flagsChanged
             if event.type == .flagsChanged {
@@ -291,4 +313,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 extension KeyboardShortcuts.Name {
     static let triggerTTS = Self("triggerTTS")
     static let triggerSummarizeTTS = Self("triggerSummarizeTTS")
+    static let triggerTranslateTTS = Self("triggerTranslateTTS")
+    static let triggerSummarizeTranslateTTS = Self("triggerSummarizeTranslateTTS")
 }

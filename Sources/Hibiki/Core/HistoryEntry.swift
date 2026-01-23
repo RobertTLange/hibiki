@@ -11,7 +11,8 @@ struct HistoryEntry: Identifiable, Codable, Sendable {
     // Separate cost tracking
     let ttsCost: Double
     let llmCost: Double?
-    let cost: Double  // Total cost (ttsCost + llmCost)
+    let translationCost: Double?
+    let cost: Double  // Total cost (ttsCost + llmCost + translationCost)
 
     // Summarization metadata (optional - nil if direct TTS)
     let wasSummarized: Bool
@@ -19,6 +20,14 @@ struct HistoryEntry: Identifiable, Codable, Sendable {
     let llmInputTokens: Int?
     let llmOutputTokens: Int?
     let llmModel: String?
+
+    // Translation metadata (optional - nil if no translation)
+    let wasTranslated: Bool
+    let translatedText: String?
+    let translationInputTokens: Int?
+    let translationOutputTokens: Int?
+    let translationModel: String?
+    let targetLanguage: String?
 
     init(
         id: UUID = UUID(),
@@ -30,7 +39,12 @@ struct HistoryEntry: Identifiable, Codable, Sendable {
         summarizedText: String? = nil,
         llmInputTokens: Int? = nil,
         llmOutputTokens: Int? = nil,
-        llmModel: String? = nil
+        llmModel: String? = nil,
+        translatedText: String? = nil,
+        translationInputTokens: Int? = nil,
+        translationOutputTokens: Int? = nil,
+        translationModel: String? = nil,
+        targetLanguage: String? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -46,10 +60,18 @@ struct HistoryEntry: Identifiable, Codable, Sendable {
         self.llmOutputTokens = llmOutputTokens
         self.llmModel = llmModel
 
+        // Translation fields
+        self.wasTranslated = translatedText != nil
+        self.translatedText = translatedText
+        self.translationInputTokens = translationInputTokens
+        self.translationOutputTokens = translationOutputTokens
+        self.translationModel = translationModel
+        self.targetLanguage = targetLanguage
+
         // Calculate TTS cost
         self.ttsCost = TTSPricing.calculateCost(inputTokens: inputTokens)
 
-        // Calculate LLM cost if applicable
+        // Calculate LLM cost if applicable (summarization)
         if let llmIn = llmInputTokens, let llmOut = llmOutputTokens, let model = llmModel {
             self.llmCost = LLMPricing.calculateCost(
                 inputTokens: llmIn,
@@ -60,8 +82,19 @@ struct HistoryEntry: Identifiable, Codable, Sendable {
             self.llmCost = nil
         }
 
-        // Total cost = TTS cost + LLM cost
-        self.cost = self.ttsCost + (self.llmCost ?? 0)
+        // Calculate translation cost if applicable (uses same LLM pricing)
+        if let transIn = translationInputTokens, let transOut = translationOutputTokens, let model = translationModel {
+            self.translationCost = LLMPricing.calculateCost(
+                inputTokens: transIn,
+                outputTokens: transOut,
+                model: model
+            )
+        } else {
+            self.translationCost = nil
+        }
+
+        // Total cost = TTS cost + LLM cost + translation cost
+        self.cost = self.ttsCost + (self.llmCost ?? 0) + (self.translationCost ?? 0)
     }
 
     var formattedTimestamp: String {
@@ -86,6 +119,13 @@ struct HistoryEntry: Identifiable, Codable, Sendable {
         return "-"
     }
 
+    var formattedTranslationCost: String {
+        if let translationCost = translationCost {
+            return String(format: "$%.6f", translationCost)
+        }
+        return "-"
+    }
+
     var truncatedText: String {
         if text.count > 100 {
             return String(text.prefix(100)) + "..."
@@ -94,7 +134,18 @@ struct HistoryEntry: Identifiable, Codable, Sendable {
     }
 
     var displayText: String {
-        wasSummarized ? (summarizedText ?? text) : text
+        // Priority: translated text > summarized text > original text
+        if wasTranslated, let translated = translatedText {
+            return translated
+        } else if wasSummarized, let summarized = summarizedText {
+            return summarized
+        }
+        return text
+    }
+
+    var targetLanguageDisplayName: String? {
+        guard let lang = targetLanguage else { return nil }
+        return TargetLanguage(rawValue: lang)?.displayName
     }
 
     var wordCount: Int {

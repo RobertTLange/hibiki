@@ -122,6 +122,24 @@ struct ConfigurationTab: View {
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
+
+                        Divider()
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            KeyboardShortcuts.Recorder("Translate + TTS:", name: .triggerTranslateTTS)
+                            Text("Translate text to target language before reading aloud.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+
+                        Divider()
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            KeyboardShortcuts.Recorder("Summarize + Translate + TTS:", name: .triggerSummarizeTranslateTTS)
+                            Text("Summarize, then translate text before reading aloud.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                     }
                     .padding(.vertical, 4)
                 }
@@ -167,6 +185,63 @@ struct ConfigurationTab: View {
                         }
 
                         Text("The summarization prompt controls how text is condensed before TTS.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                // Translation Section
+                GroupBox("Translation") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Picker("Target Language:", selection: $appState.targetLanguage) {
+                            ForEach(TargetLanguage.allCases) { language in
+                                Text(language.displayName).tag(language.rawValue)
+                            }
+                        }
+                        .pickerStyle(.menu)
+
+                        Picker("Model:", selection: $appState.translationModelSetting) {
+                            ForEach(LLMModel.allCases) { model in
+                                Text(model.displayName).tag(model.rawValue)
+                            }
+                        }
+                        .pickerStyle(.menu)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("System Prompt:")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+
+                            TextEditor(text: $appState.translationPrompt)
+                                .font(.system(.body, design: .monospaced))
+                                .frame(height: 80)
+                                .scrollContentBackground(.hidden)
+                                .background(Color(NSColor.textBackgroundColor))
+                                .cornerRadius(4)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                                )
+                        }
+
+                        HStack {
+                            Button("Reset to Default") {
+                                appState.translationPrompt = """
+                                    Translate the following text to {language}. Preserve the meaning, tone, and style. \
+                                    Output only the translation without any explanations or notes.
+                                    """
+                            }
+                            .controlSize(.small)
+
+                            Spacer()
+
+                            Text("Use {language} as placeholder")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+
+                        Text("Select the language to translate text into before TTS. Set to \"None\" to disable translation.")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }

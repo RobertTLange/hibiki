@@ -16,22 +16,24 @@ struct HistoryTableView: View {
             .width(min: 120, ideal: 140)
 
             TableColumn("Type") { entry in
-                HStack(spacing: 4) {
+                HStack(spacing: 2) {
                     if entry.wasSummarized {
                         Image(systemName: "sparkles")
                             .foregroundColor(.purple)
-                        Text("AI")
                             .font(.caption2)
-                            .foregroundColor(.purple)
-                    } else {
+                    }
+                    if entry.wasTranslated {
+                        Image(systemName: "globe")
+                            .foregroundColor(Color(red: 0.3, green: 0.55, blue: 0.85))
+                            .font(.caption2)
+                    }
+                    if !entry.wasSummarized && !entry.wasTranslated {
                         Image(systemName: "speaker.wave.2")
                             .foregroundColor(.secondary)
-                        Text("TTS")
                             .font(.caption2)
-                            .foregroundColor(.secondary)
                     }
                 }
-                .help(entry.wasSummarized ? "Summarized with AI before TTS" : "Direct text-to-speech")
+                .help(typeHelp(for: entry))
             }
             .width(50)
 
@@ -48,7 +50,7 @@ struct HistoryTableView: View {
                 if let summary = entry.summarizedText {
                     HoverableTextCell(
                         text: summary,
-                        displayText: truncateText(summary, maxLength: 80),
+                        displayText: truncateText(summary, maxLength: 60),
                         title: "Summary",
                         textColor: .purple
                     )
@@ -58,21 +60,37 @@ struct HistoryTableView: View {
                         .foregroundColor(.secondary)
                 }
             }
-            .width(min: 120, ideal: 180)
+            .width(min: 100, ideal: 140)
 
-            TableColumn("Voice") { entry in
-                Text(entry.voice.capitalized)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+            TableColumn("Translation") { entry in
+                if let translation = entry.translatedText {
+                    HoverableTextCell(
+                        text: translation,
+                        displayText: truncateText(translation, maxLength: 60),
+                        title: "Translation (\(entry.targetLanguageDisplayName ?? ""))",
+                        textColor: Color(red: 0.3, green: 0.55, blue: 0.85)
+                    )
+                } else {
+                    Text("-")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
-            .width(55)
+            .width(min: 100, ideal: 140)
 
             TableColumn("LLM") { entry in
                 Text(entry.formattedLLMCost)
                     .font(.system(.caption, design: .monospaced))
                     .foregroundColor(entry.wasSummarized ? .orange : .secondary)
             }
-            .width(60)
+            .width(55)
+
+            TableColumn("Trans.") { entry in
+                Text(entry.formattedTranslationCost)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundColor(entry.wasTranslated ? Color(red: 0.3, green: 0.55, blue: 0.85) : .secondary)
+            }
+            .width(55)
 
             TableColumn("TTS") { entry in
                 Text(entry.formattedTTSCost)
@@ -120,6 +138,25 @@ struct HistoryTableView: View {
             return String(text.prefix(maxLength)) + "..."
         }
         return text
+    }
+
+    /// Generate help text for the type column
+    private func typeHelp(for entry: HistoryEntry) -> String {
+        var parts: [String] = []
+        if entry.wasSummarized {
+            parts.append("Summarized")
+        }
+        if entry.wasTranslated {
+            if let lang = entry.targetLanguageDisplayName {
+                parts.append("Translated to \(lang)")
+            } else {
+                parts.append("Translated")
+            }
+        }
+        if parts.isEmpty {
+            return "Direct text-to-speech"
+        }
+        return parts.joined(separator: " + ") + " before TTS"
     }
 }
 

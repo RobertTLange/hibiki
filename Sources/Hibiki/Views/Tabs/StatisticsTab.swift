@@ -56,7 +56,8 @@ struct StatisticsTab: View {
                                 .chartForegroundStyleScale([
                                     "Total": Color.blue,
                                     "TTS": Color.purple,
-                                    "LLM": Color.orange
+                                    "LLM": Color.orange,
+                                    "Translation": Color(red: 0.3, green: 0.55, blue: 0.85)
                                 ])
                                 .chartXAxis {
                                     AxisMarks(values: .stride(by: .day, count: 7)) { _ in
@@ -212,6 +213,7 @@ struct StatisticsTab: View {
             points.append(CostDataPoint(date: day.date, cost: day.cost, category: .total))
             points.append(CostDataPoint(date: day.date, cost: day.ttsCost, category: .tts))
             points.append(CostDataPoint(date: day.date, cost: day.llmCost, category: .llm))
+            points.append(CostDataPoint(date: day.date, cost: day.translationCost, category: .translation))
         }
         return points
     }
@@ -307,8 +309,15 @@ struct SummaryCard: View {
                         }
 
                         HStack {
+                            Image(systemName: "globe")
+                                .foregroundColor(Color(red: 0.3, green: 0.55, blue: 0.85))
+                            Text(String(format: "Trans: $%.4f", summary.translationCost))
+                            Spacer()
+                        }
+
+                        HStack {
                             Image(systemName: "text.alignleft")
-                                .foregroundColor(.green)
+                                .foregroundColor(.teal)
                             Text("\(summary.wordCount) words")
                             Spacer()
                         }

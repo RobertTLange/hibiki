@@ -36,6 +36,30 @@ struct AudioPlayerPanel: View {
                 }
             }
 
+            // Streaming translation text below waveform (during translation)
+            if appState.isTranslating || !appState.streamingTranslation.isEmpty {
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical, showsIndicators: true) {
+                        Text(appState.streamingTranslation.isEmpty ? " " : appState.streamingTranslation)
+                            .font(.system(size: 12))
+                            .foregroundColor(Color(red: 0.3, green: 0.55, blue: 0.85))
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                            .padding(8)
+                            .id("streamingTranslation")
+                    }
+                    .frame(height: 80)
+                    .frame(maxWidth: .infinity)
+                    .background(Color(red: 0.3, green: 0.55, blue: 0.85).opacity(0.08))
+                    .cornerRadius(6)
+                    .padding(.horizontal, 12)
+                    .onChange(of: appState.streamingTranslation) { _, _ in
+                        withAnimation(.easeOut(duration: 0.1)) {
+                            proxy.scrollTo("streamingTranslation", anchor: .bottom)
+                        }
+                    }
+                }
+            }
+
             // Speed control row
             HStack(spacing: 8) {
                 Image(systemName: "gauge.with.dots.needle.33percent")
@@ -61,16 +85,24 @@ struct AudioPlayerPanel: View {
 
             // Bottom row: voice info and controls
             HStack {
-                // Voice indicator or summarizing status
+                // Voice indicator or summarizing/translating status
                 HStack(spacing: 6) {
                     if appState.isSummarizing {
                         ProgressView()
                             .scaleEffect(0.6)
                             .frame(width: 12, height: 12)
-                        
+
                         Text("Summarizing...")
                             .font(.system(size: 13))
                             .foregroundColor(.primary)
+                    } else if appState.isTranslating {
+                        ProgressView()
+                            .scaleEffect(0.6)
+                            .frame(width: 12, height: 12)
+
+                        Text("Translating...")
+                            .font(.system(size: 13))
+                            .foregroundColor(Color(red: 0.3, green: 0.55, blue: 0.85))
                     } else {
                         Image(systemName: "mic.fill")
                             .font(.system(size: 12))
