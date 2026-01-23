@@ -4,22 +4,48 @@ struct DailyUsage: Identifiable, Sendable {
     let id: Date
     let date: Date
     let cost: Double
+    let ttsCost: Double
+    let llmCost: Double
     let wordCount: Int
     let audioMinutes: Double
     let requestCount: Int
 
     static func empty(for date: Date) -> DailyUsage {
-        DailyUsage(id: date, date: date, cost: 0, wordCount: 0, audioMinutes: 0, requestCount: 0)
+        DailyUsage(id: date, date: date, cost: 0, ttsCost: 0, llmCost: 0, wordCount: 0, audioMinutes: 0, requestCount: 0)
+    }
+}
+
+/// For multi-line chart data
+struct CostDataPoint: Identifiable {
+    let id = UUID()
+    let date: Date
+    let cost: Double
+    let category: CostCategory
+}
+
+enum CostCategory: String, CaseIterable {
+    case total = "Total"
+    case tts = "TTS"
+    case llm = "LLM"
+    
+    var color: String {
+        switch self {
+        case .total: return "blue"
+        case .tts: return "purple"
+        case .llm: return "orange"
+        }
     }
 }
 
 struct PeriodSummary: Sendable {
     let cost: Double
+    let ttsCost: Double
+    let llmCost: Double
     let wordCount: Int
     let audioMinutes: Double
     let requestCount: Int
 
-    static let zero = PeriodSummary(cost: 0, wordCount: 0, audioMinutes: 0, requestCount: 0)
+    static let zero = PeriodSummary(cost: 0, ttsCost: 0, llmCost: 0, wordCount: 0, audioMinutes: 0, requestCount: 0)
 }
 
 /// Thread-safe calculator that works with pre-fetched data
@@ -52,6 +78,8 @@ final class UsageStatisticsCalculator: Sendable {
 
             if let dayEntries = entriesByDay[date] {
                 let cost = dayEntries.reduce(0) { $0 + $1.cost }
+                let ttsCost = dayEntries.reduce(0) { $0 + $1.ttsCost }
+                let llmCost = dayEntries.reduce(0) { $0 + ($1.llmCost ?? 0) }
                 let words = dayEntries.reduce(0) { $0 + $1.wordCount }
                 let minutes = calculateAudioMinutes(for: dayEntries)
 
@@ -59,6 +87,8 @@ final class UsageStatisticsCalculator: Sendable {
                     id: date,
                     date: date,
                     cost: cost,
+                    ttsCost: ttsCost,
+                    llmCost: llmCost,
                     wordCount: words,
                     audioMinutes: minutes,
                     requestCount: dayEntries.count
@@ -97,6 +127,8 @@ final class UsageStatisticsCalculator: Sendable {
     private func summarize(_ entries: [HistoryEntry]) -> PeriodSummary {
         PeriodSummary(
             cost: entries.reduce(0) { $0 + $1.cost },
+            ttsCost: entries.reduce(0) { $0 + $1.ttsCost },
+            llmCost: entries.reduce(0) { $0 + ($1.llmCost ?? 0) },
             wordCount: entries.reduce(0) { $0 + $1.wordCount },
             audioMinutes: calculateAudioMinutes(for: entries),
             requestCount: entries.count

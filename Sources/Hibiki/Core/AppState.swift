@@ -6,24 +6,45 @@ final class AppState: ObservableObject {
 
     @Published var isPlaying = false
     @Published var isLoading = false
+    @Published var isSummarizing = false
     @Published var currentText: String?
     @Published var errorMessage: String?
+    @Published var streamingSummary: String = ""  // Accumulates streaming summary text
 
     @AppStorage("selectedVoice") var selectedVoice: String = TTSVoice.coral.rawValue
     @AppStorage("openaiAPIKey") var apiKey: String = ""
+    @AppStorage("playbackSpeed") var playbackSpeed: Double = 1.0
+
+    // Summarization settings
+    @AppStorage("summarizationModel") var summarizationModel: String = LLMModel.gpt5Nano.rawValue
+    @AppStorage("summarizationPrompt") var summarizationPrompt: String = """
+        Summarize the following text concisely while preserving the key information. \
+        The summary should be suitable for text-to-speech, so write in complete sentences \
+        and avoid bullet points or special formatting. Keep it under 3 paragraphs.
+        """
 
     // Audio level monitor for waveform visualization
     let audioLevelMonitor = AudioLevelMonitor()
 
     private let ttsService = TTSService()
+    private let llmService = LLMService()
     private let audioPlayer = StreamingAudioPlayer.shared
     private let accessibilityManager = AccessibilityManager.shared
+    private var summarizationTask: Task<Void, Never>?
 
     private let logger = DebugLogger.shared
 
     // Track state for history save on stop
     private var accumulatedAudioData = Data()
-    private var pendingHistorySave: (text: String, voice: String, inputTokens: Int)?
+    private var pendingHistorySave: (
+        text: String,
+        voice: String,
+        inputTokens: Int,
+        summarizedText: String?,
+        llmInputTokens: Int?,
+        llmOutputTokens: Int?,
+        llmModel: String?
+    )?
     private var historySaved = false
 
     init() {
@@ -42,6 +63,15 @@ final class AppState: ObservableObject {
             self?.logger.info("Hotkey pressed!", source: "AppState")
             Task { @MainActor in
                 await self?.handleHotkeyPressed()
+            }
+        }
+
+        logger.debug("Setting up hotkey handler for .triggerSummarizeTTS", source: "AppState")
+        KeyboardShortcuts.onKeyDown(for: .triggerSummarizeTTS) { [weak self] in
+            self?.logger.info("Summarize+TTS hotkey pressed!", source: "AppState")
+            self?.summarizationTask?.cancel()
+            self?.summarizationTask = Task { @MainActor in
+                await self?.handleSummarizeTTSPressed()
             }
         }
     }
@@ -102,13 +132,22 @@ final class AppState: ObservableObject {
 
             // Reset audio player for fresh playback
             audioPlayer.reset()
+            audioPlayer.playbackSpeed = Float(playbackSpeed)
 
             // Get the voice enum from stored string
             let voice = TTSVoice(rawValue: selectedVoice) ?? .coral
             logger.info("Using voice: \(voice.rawValue)", source: "AppState")
 
-            // Store pending history info for save on stop
-            pendingHistorySave = (text: text, voice: voice.rawValue, inputTokens: 0)
+            // Store pending history info for save on stop (no summarization for direct TTS)
+            pendingHistorySave = (
+                text: text,
+                voice: voice.rawValue,
+                inputTokens: 0,
+                summarizedText: nil,
+                llmInputTokens: nil,
+                llmOutputTokens: nil,
+                llmModel: nil
+            )
 
             // Set up playback completion callback
             audioPlayer.onPlaybackComplete = { [weak self] in
@@ -162,9 +201,169 @@ final class AppState: ObservableObject {
         }
     }
 
+    @MainActor
+    func handleSummarizeTTSPressed() async {
+        logger.debug("handleSummarizeTTSPressed called", source: "AppState")
+
+        // If already playing, stop
+        if isPlaying {
+            logger.info("Already playing, stopping playback", source: "AppState")
+            stopPlayback()
+            return
+        }
+
+        do {
+            isLoading = true
+            isSummarizing = true
+            errorMessage = nil
+
+            // Get selected text
+            logger.debug("Attempting to get selected text for summarization...", source: "AppState")
+            let text = try accessibilityManager.getSelectedText()
+            logger.debug("Got text: \(text ?? "nil")", source: "AppState")
+
+            guard let text = text, !text.isEmpty else {
+                logger.error("No text selected", source: "AppState")
+                errorMessage = "No text selected"
+                isLoading = false
+                isSummarizing = false
+                return
+            }
+
+            logger.info("Selected text for summarization (\(text.count) chars)", source: "AppState")
+
+            // Check API key
+            var effectiveApiKey = apiKey
+            if effectiveApiKey.isEmpty {
+                if let envKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"], !envKey.isEmpty {
+                    effectiveApiKey = envKey
+                    apiKey = envKey
+                    logger.info("Loaded API key from environment variable", source: "AppState")
+                } else {
+                    logger.error("API key is empty!", source: "AppState")
+                    errorMessage = "No API key configured. Enter key in Settings."
+                    isLoading = false
+                    isSummarizing = false
+                    return
+                }
+            }
+
+            // Summarize text with streaming
+            let model = LLMModel(rawValue: summarizationModel) ?? .gpt5Nano
+            logger.info("Summarizing with model: \(model.rawValue)", source: "AppState")
+            
+            // Reset streaming summary
+            streamingSummary = ""
+
+            let llmResult = try await llmService.summarizeStreaming(
+                text: text,
+                model: model,
+                systemPrompt: summarizationPrompt,
+                apiKey: effectiveApiKey,
+                onChunk: { [weak self] chunk in
+                    guard let self = self else { return }
+                    self.logger.debug("LLM chunk received: \(chunk.count) chars", source: "AppState")
+                    self.streamingSummary += chunk
+                }
+            )
+
+            logger.info("Summarization complete: \(llmResult.summarizedText.count) chars, \(llmResult.inputTokens) input tokens, \(llmResult.outputTokens) output tokens", source: "AppState")
+
+            isSummarizing = false
+
+            // Now proceed with TTS using summarized text
+            currentText = llmResult.summarizedText
+            isPlaying = true
+            isLoading = false
+
+            // Reset tracking state
+            accumulatedAudioData = Data()
+            pendingHistorySave = nil
+            historySaved = false
+
+            audioPlayer.reset()
+            audioPlayer.playbackSpeed = Float(playbackSpeed)
+
+            let voice = TTSVoice(rawValue: selectedVoice) ?? .coral
+            logger.info("Using voice: \(voice.rawValue)", source: "AppState")
+
+            // Store pending history with summarization metadata
+            pendingHistorySave = (
+                text: text,  // Original text
+                voice: voice.rawValue,
+                inputTokens: 0,
+                summarizedText: llmResult.summarizedText,
+                llmInputTokens: llmResult.inputTokens,
+                llmOutputTokens: llmResult.outputTokens,
+                llmModel: llmResult.model
+            )
+
+            audioPlayer.onPlaybackComplete = { [weak self] in
+                self?.logger.info("Audio playback complete", source: "AppState")
+                Task { @MainActor in
+                    self?.handlePlaybackComplete()
+                }
+            }
+
+            audioLevelMonitor.startMonitoring(engine: audioPlayer.audioEngine)
+
+            // TTS the summarized text
+            logger.info("Starting TTS stream for summarized text...", source: "AppState")
+            ttsService.streamSpeech(
+                text: llmResult.summarizedText,
+                voice: voice,
+                apiKey: effectiveApiKey,
+                onAudioChunk: { [weak self] data in
+                    self?.logger.debug("Received audio chunk: \(data.count) bytes", source: "AppState")
+                    self?.audioPlayer.enqueue(pcmData: data)
+                    self?.accumulatedAudioData.append(data)
+                },
+                onComplete: { [weak self] result in
+                    self?.logger.info("TTS stream complete, audio size: \(result.audioData.count) bytes, inputTokens: \(result.inputTokens)", source: "AppState")
+
+                    // Update pending history with actual TTS token count
+                    if var pending = self?.pendingHistorySave {
+                        pending.inputTokens = result.inputTokens
+                        self?.pendingHistorySave = pending
+                    }
+
+                    self?.audioPlayer.markStreamComplete()
+                },
+                onError: { [weak self] error in
+                    self?.logger.error("TTS error: \(error.localizedDescription)", source: "AppState")
+                    Task { @MainActor in
+                        self?.errorMessage = error.localizedDescription
+                        self?.isLoading = false
+                        self?.isPlaying = false
+                        self?.isSummarizing = false
+                        self?.audioLevelMonitor.stopMonitoring()
+                    }
+                }
+            )
+        } catch {
+            logger.error("Summarize+TTS exception: \(error.localizedDescription)", source: "AppState")
+            errorMessage = error.localizedDescription
+            isLoading = false
+            isPlaying = false
+            isSummarizing = false
+        }
+    }
+
+    /// Update playback speed in real-time (also persists the setting)
+    func updatePlaybackSpeed(_ speed: Double) {
+        playbackSpeed = speed
+        audioPlayer.playbackSpeed = Float(speed)
+        logger.debug("Playback speed updated to \(speed)x", source: "AppState")
+    }
+
     func stopPlayback() {
         logger.info("Stopping playback", source: "AppState")
 
+        // Cancel ongoing summarization task
+        summarizationTask?.cancel()
+        summarizationTask = nil
+        llmService.cancel()
+        
         // Stop audio and TTS
         audioPlayer.stop()
         ttsService.cancel()
@@ -177,14 +376,20 @@ final class AppState: ObservableObject {
                 text: pending.text,
                 voice: pending.voice,
                 inputTokens: pending.inputTokens,
-                audioData: accumulatedAudioData
+                audioData: accumulatedAudioData,
+                summarizedText: pending.summarizedText,
+                llmInputTokens: pending.llmInputTokens,
+                llmOutputTokens: pending.llmOutputTokens,
+                llmModel: pending.llmModel
             )
             historySaved = true
         }
 
         // Clear state
         isPlaying = false
+        isSummarizing = false
         currentText = nil
+        streamingSummary = ""
         accumulatedAudioData = Data()
         pendingHistorySave = nil
     }
@@ -202,7 +407,11 @@ final class AppState: ObservableObject {
                 text: pending.text,
                 voice: pending.voice,
                 inputTokens: pending.inputTokens,
-                audioData: accumulatedAudioData
+                audioData: accumulatedAudioData,
+                summarizedText: pending.summarizedText,
+                llmInputTokens: pending.llmInputTokens,
+                llmOutputTokens: pending.llmOutputTokens,
+                llmModel: pending.llmModel
             )
             historySaved = true
         }
@@ -211,6 +420,7 @@ final class AppState: ObservableObject {
         audioLevelMonitor.stopMonitoring()
         isPlaying = false
         currentText = nil
+        streamingSummary = ""
         accumulatedAudioData = Data()
         pendingHistorySave = nil
     }

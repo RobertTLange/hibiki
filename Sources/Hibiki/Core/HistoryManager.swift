@@ -1,9 +1,13 @@
 import Foundation
+import Combine
 
 /// History manager - NOT @Observable to avoid threading conflicts with SwiftUI observation.
 /// Views should maintain their own @State for entries and call refresh methods.
 final class HistoryManager {
     static let shared = HistoryManager()
+    
+    /// Publisher that emits when entries change (add, delete, clear)
+    let entriesDidChange = PassthroughSubject<Void, Never>()
 
     /// Thread-safe access to entries. Always access from main thread.
     private(set) var entries: [HistoryEntry] = []
@@ -32,7 +36,16 @@ final class HistoryManager {
     // MARK: - Public API
 
     @discardableResult
-    func addEntry(text: String, voice: String, inputTokens: Int, audioData: Data) -> HistoryEntry {
+    func addEntry(
+        text: String,
+        voice: String,
+        inputTokens: Int,
+        audioData: Data,
+        summarizedText: String? = nil,
+        llmInputTokens: Int? = nil,
+        llmOutputTokens: Int? = nil,
+        llmModel: String? = nil
+    ) -> HistoryEntry {
         let audioFileName = "\(UUID().uuidString).pcm"
         let audioURL = audioDirectory.appendingPathComponent(audioFileName)
 
@@ -47,13 +60,18 @@ final class HistoryManager {
             text: text,
             voice: voice,
             inputTokens: inputTokens,
-            audioFileName: audioFileName
+            audioFileName: audioFileName,
+            summarizedText: summarizedText,
+            llmInputTokens: llmInputTokens,
+            llmOutputTokens: llmOutputTokens,
+            llmModel: llmModel
         )
 
         DispatchQueue.main.async {
             self.entries.insert(entry, at: 0)
             self.saveHistory()
             self.enforceRetentionPolicy()
+            self.entriesDidChange.send()
         }
 
         return entry
@@ -67,6 +85,7 @@ final class HistoryManager {
         DispatchQueue.main.async {
             self.entries.removeAll { $0.id == entry.id }
             self.saveHistory()
+            self.entriesDidChange.send()
         }
     }
 
@@ -80,6 +99,7 @@ final class HistoryManager {
         DispatchQueue.main.async {
             self.entries.removeAll()
             self.saveHistory()
+            self.entriesDidChange.send()
         }
     }
 

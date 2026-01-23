@@ -1,13 +1,16 @@
 import SwiftUI
 import Charts
+import Combine
 
 struct StatisticsTab: View {
     @State private var dailyUsage: [DailyUsage] = []
+    @State private var costDataPoints: [CostDataPoint] = []
     @State private var todaySummary: PeriodSummary = .zero
     @State private var monthSummary: PeriodSummary = .zero
     @State private var allTimeSummary: PeriodSummary = .zero
     @State private var isLoading = true
     @State private var isVisible = false  // Track visibility to control chart rendering
+    @State private var cancellables = Set<AnyCancellable>()
 
     var body: some View {
         ScrollView {
@@ -33,44 +36,45 @@ struct StatisticsTab: View {
 
                 // Only render charts when view is visible to prevent freeze on tab switch
                 if isVisible {
-                    // Cost Over Time Chart
+                    // Cost Over Time Chart - Multi-line with Total, TTS, and LLM
                     GroupBox("Cost Over Time") {
                         if isLoading {
                             loadingChartView
                         } else if dailyUsage.isEmpty || dailyUsage.allSatisfy({ $0.cost == 0 }) {
                             emptyChartView
                         } else {
-                            Chart(dailyUsage) { day in
-                                LineMark(
-                                    x: .value("Date", day.date, unit: .day),
-                                    y: .value("Cost", day.cost)
-                                )
-                                .foregroundStyle(.blue)
-                                .interpolationMethod(.catmullRom)
-
-                                AreaMark(
-                                    x: .value("Date", day.date, unit: .day),
-                                    y: .value("Cost", day.cost)
-                                )
-                                .foregroundStyle(.blue.opacity(0.1))
-                                .interpolationMethod(.catmullRom)
-                            }
-                            .frame(height: 180)
-                            .chartXAxis {
-                                AxisMarks(values: .stride(by: .day, count: 7)) { _ in
-                                    AxisGridLine()
-                                    AxisValueLabel(format: .dateTime.month(.abbreviated).day())
+                            VStack(alignment: .leading, spacing: 8) {
+                                Chart(costDataPoints) { point in
+                                    LineMark(
+                                        x: .value("Date", point.date, unit: .day),
+                                        y: .value("Cost", point.cost)
+                                    )
+                                    .foregroundStyle(by: .value("Category", point.category.rawValue))
+                                    .interpolationMethod(.catmullRom)
                                 }
-                            }
-                            .chartYAxis {
-                                AxisMarks { value in
-                                    AxisGridLine()
-                                    AxisValueLabel {
-                                        if let cost = value.as(Double.self) {
-                                            Text(String(format: "$%.4f", cost))
+                                .frame(height: 180)
+                                .chartForegroundStyleScale([
+                                    "Total": Color.blue,
+                                    "TTS": Color.purple,
+                                    "LLM": Color.orange
+                                ])
+                                .chartXAxis {
+                                    AxisMarks(values: .stride(by: .day, count: 7)) { _ in
+                                        AxisGridLine()
+                                        AxisValueLabel(format: .dateTime.month(.abbreviated).day())
+                                    }
+                                }
+                                .chartYAxis {
+                                    AxisMarks { value in
+                                        AxisGridLine()
+                                        AxisValueLabel {
+                                            if let cost = value.as(Double.self) {
+                                                Text(String(format: "$%.4f", cost))
+                                            }
                                         }
                                     }
                                 }
+                                .chartLegend(position: .bottom, alignment: .center)
                             }
                         }
                     }
@@ -172,11 +176,44 @@ struct StatisticsTab: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 isVisible = true
             }
+            // Subscribe to history changes
+            HistoryManager.shared.entriesDidChange
+                .receive(on: DispatchQueue.main)
+                .sink { [self] _ in
+                    reloadStatistics()
+                }
+                .store(in: &cancellables)
         }
         .onDisappear {
             // Hide charts immediately when leaving to prevent freeze
             isVisible = false
         }
+    }
+    
+    /// Reload statistics when history changes
+    private func reloadStatistics() {
+        let historyManager = HistoryManager.shared
+        let entriesSnapshot = historyManager.entries
+        let audioDir = historyManager.audioDirectory
+
+        let calculator = UsageStatisticsCalculator(entries: entriesSnapshot, audioDirectory: audioDir)
+
+        self.dailyUsage = calculator.dailyUsage(days: 30)
+        self.costDataPoints = buildCostDataPoints(from: dailyUsage)
+        self.todaySummary = calculator.calculateTodaySummary()
+        self.monthSummary = calculator.calculateThisMonthSummary()
+        self.allTimeSummary = calculator.calculateAllTimeSummary()
+    }
+    
+    /// Convert daily usage to cost data points for multi-line chart
+    private func buildCostDataPoints(from usage: [DailyUsage]) -> [CostDataPoint] {
+        var points: [CostDataPoint] = []
+        for day in usage {
+            points.append(CostDataPoint(date: day.date, cost: day.cost, category: .total))
+            points.append(CostDataPoint(date: day.date, cost: day.ttsCost, category: .tts))
+            points.append(CostDataPoint(date: day.date, cost: day.llmCost, category: .llm))
+        }
+        return points
     }
 
     private var loadingChartView: some View {
@@ -220,6 +257,7 @@ struct StatisticsTab: View {
         // These calculations are fast (just iterating over history entries)
         // Running synchronously avoids all the async/threading complexity
         self.dailyUsage = calculator.dailyUsage(days: 30)
+        self.costDataPoints = buildCostDataPoints(from: dailyUsage)
         self.todaySummary = calculator.calculateTodaySummary()
         self.monthSummary = calculator.calculateThisMonthSummary()
         self.allTimeSummary = calculator.calculateAllTimeSummary()
@@ -253,6 +291,20 @@ struct SummaryCard: View {
                             Text(String(format: "$%.4f", summary.cost))
                             Spacer()
                         }
+                        
+                        HStack {
+                            Image(systemName: "speaker.wave.2")
+                                .foregroundColor(.purple)
+                            Text(String(format: "TTS: $%.4f", summary.ttsCost))
+                            Spacer()
+                        }
+                        
+                        HStack {
+                            Image(systemName: "brain")
+                                .foregroundColor(.orange)
+                            Text(String(format: "LLM: $%.4f", summary.llmCost))
+                            Spacer()
+                        }
 
                         HStack {
                             Image(systemName: "text.alignleft")
@@ -262,15 +314,15 @@ struct SummaryCard: View {
                         }
 
                         HStack {
-                            Image(systemName: "speaker.wave.2")
-                                .foregroundColor(.purple)
+                            Image(systemName: "clock")
+                                .foregroundColor(.cyan)
                             Text(String(format: "%.1f min", summary.audioMinutes))
                             Spacer()
                         }
 
                         HStack {
                             Image(systemName: "arrow.clockwise")
-                                .foregroundColor(.orange)
+                                .foregroundColor(.gray)
                             Text("\(summary.requestCount) requests")
                             Spacer()
                         }

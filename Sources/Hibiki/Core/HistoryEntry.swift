@@ -6,17 +6,62 @@ struct HistoryEntry: Identifiable, Codable, Sendable {
     let text: String
     let voice: String
     let inputTokens: Int
-    let cost: Double
     let audioFileName: String
 
-    init(id: UUID = UUID(), timestamp: Date = Date(), text: String, voice: String, inputTokens: Int, audioFileName: String) {
+    // Separate cost tracking
+    let ttsCost: Double
+    let llmCost: Double?
+    let cost: Double  // Total cost (ttsCost + llmCost)
+
+    // Summarization metadata (optional - nil if direct TTS)
+    let wasSummarized: Bool
+    let summarizedText: String?
+    let llmInputTokens: Int?
+    let llmOutputTokens: Int?
+    let llmModel: String?
+
+    init(
+        id: UUID = UUID(),
+        timestamp: Date = Date(),
+        text: String,
+        voice: String,
+        inputTokens: Int,
+        audioFileName: String,
+        summarizedText: String? = nil,
+        llmInputTokens: Int? = nil,
+        llmOutputTokens: Int? = nil,
+        llmModel: String? = nil
+    ) {
         self.id = id
         self.timestamp = timestamp
         self.text = text
         self.voice = voice
         self.inputTokens = inputTokens
-        self.cost = TTSPricing.calculateCost(inputTokens: inputTokens)
         self.audioFileName = audioFileName
+
+        // Summarization fields
+        self.wasSummarized = summarizedText != nil
+        self.summarizedText = summarizedText
+        self.llmInputTokens = llmInputTokens
+        self.llmOutputTokens = llmOutputTokens
+        self.llmModel = llmModel
+
+        // Calculate TTS cost
+        self.ttsCost = TTSPricing.calculateCost(inputTokens: inputTokens)
+
+        // Calculate LLM cost if applicable
+        if let llmIn = llmInputTokens, let llmOut = llmOutputTokens, let model = llmModel {
+            self.llmCost = LLMPricing.calculateCost(
+                inputTokens: llmIn,
+                outputTokens: llmOut,
+                model: model
+            )
+        } else {
+            self.llmCost = nil
+        }
+
+        // Total cost = TTS cost + LLM cost
+        self.cost = self.ttsCost + (self.llmCost ?? 0)
     }
 
     var formattedTimestamp: String {
@@ -30,11 +75,26 @@ struct HistoryEntry: Identifiable, Codable, Sendable {
         String(format: "$%.6f", cost)
     }
 
+    var formattedTTSCost: String {
+        String(format: "$%.6f", ttsCost)
+    }
+
+    var formattedLLMCost: String {
+        if let llmCost = llmCost {
+            return String(format: "$%.6f", llmCost)
+        }
+        return "-"
+    }
+
     var truncatedText: String {
         if text.count > 100 {
             return String(text.prefix(100)) + "..."
         }
         return text
+    }
+
+    var displayText: String {
+        wasSummarized ? (summarizedText ?? text) : text
     }
 
     var wordCount: Int {
@@ -48,5 +108,36 @@ enum TTSPricing {
 
     static func calculateCost(inputTokens: Int) -> Double {
         return Double(inputTokens) / 1_000_000.0 * costPerMillionTokens
+    }
+}
+
+enum LLMPricing {
+    // Pricing per 1M tokens
+    // gpt-5-nano: $0.05 input, $0.40 output
+    // gpt-5-mini: $0.25 input, $2.00 output
+    // gpt-5.2: $1.75 input, $14.00 output
+
+    static func calculateCost(inputTokens: Int, outputTokens: Int, model: String) -> Double {
+        let inputCostPerMillion: Double
+        let outputCostPerMillion: Double
+
+        switch model {
+        case "gpt-5-nano":
+            inputCostPerMillion = 0.05
+            outputCostPerMillion = 0.40
+        case "gpt-5-mini":
+            inputCostPerMillion = 0.25
+            outputCostPerMillion = 2.00
+        case "gpt-5.2":
+            inputCostPerMillion = 1.75
+            outputCostPerMillion = 14.00
+        default:
+            // Default to gpt-5-nano pricing
+            inputCostPerMillion = 0.05
+            outputCostPerMillion = 0.40
+        }
+
+        return Double(inputTokens) / 1_000_000.0 * inputCostPerMillion +
+               Double(outputTokens) / 1_000_000.0 * outputCostPerMillion
     }
 }

@@ -10,6 +10,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var mainWindow: NSWindow?
     private var audioPlayerPanel: NSPanel?
     private var playingObserver: AnyCancellable?
+    private var summarizingObserver: AnyCancellable?
     private var keyboardMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -41,10 +42,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .sink { [weak self] isPlaying in
                 if isPlaying {
                     self?.showAudioPlayerPanel()
-                } else {
+                } else if !AppState.shared.isSummarizing {
                     self?.hideAudioPlayerPanel()
                 }
             }
+        
+        // Also observe summarizing state to show panel during LLM streaming
+        summarizingObserver = AppState.shared.$isSummarizing
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] isSummarizing in
+                if isSummarizing {
+                    self?.showAudioPlayerPanel()
+                } else if !AppState.shared.isPlaying {
+                    self?.hideAudioPlayerPanel()
+                }
+            }
+        
+        // Auto-open settings window on launch (useful for development)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            self?.openSettings()
+        }
     }
 
     private func setupAppIcon() {
@@ -154,6 +171,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if KeyboardShortcuts.getShortcut(for: .triggerTTS) == nil {
             KeyboardShortcuts.setShortcut(.init(.f, modifiers: [.option]), for: .triggerTTS)
         }
+
+        // Set default for summarize+TTS (Shift + Option + F)
+        if KeyboardShortcuts.getShortcut(for: .triggerSummarizeTTS) == nil {
+            KeyboardShortcuts.setShortcut(.init(.f, modifiers: [.shift, .option]), for: .triggerSummarizeTTS)
+        }
     }
 
     // MARK: - Audio Player Panel
@@ -177,8 +199,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func createAudioPlayerPanel() {
+        // Taller to accommodate streaming summary text
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 340, height: 90),
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 200),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -191,7 +214,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         let contentView = AudioPlayerPanel(audioLevelMonitor: AppState.shared.audioLevelMonitor)
             .environmentObject(AppState.shared)
-        panel.contentView = NSHostingView(rootView: contentView)
+        
+        let hostingView = NSHostingView(rootView: contentView)
+        hostingView.autoresizingMask = [.width, .height]
+        panel.contentView = hostingView
 
         audioPlayerPanel = panel
     }
@@ -217,7 +243,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard keyboardMonitor == nil else { return }
 
         keyboardMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
-            guard AppState.shared.isPlaying else { return }
+            guard AppState.shared.isPlaying || AppState.shared.isSummarizing else { return }
 
             // Check for 'S' key (stop)
             if event.keyCode == 1 && event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty {
@@ -260,4 +286,5 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 // Define keyboard shortcut names
 extension KeyboardShortcuts.Name {
     static let triggerTTS = Self("triggerTTS")
+    static let triggerSummarizeTTS = Self("triggerSummarizeTTS")
 }
