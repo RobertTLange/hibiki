@@ -7,6 +7,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var popover: NSPopover!
     private var menu: NSMenu!
     private var settingsWindow: NSWindow?
+    private var historyWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Ensure only one instance is running
@@ -56,6 +57,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ","))
+        menu.addItem(NSMenuItem(title: "History...", action: #selector(openHistory), keyEquivalent: "h"))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit Tyler", action: #selector(quitApp), keyEquivalent: "q"))
 
@@ -110,6 +112,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    @objc private func openHistory() {
+        // Temporarily become a regular app to accept keyboard input
+        NSApp.setActivationPolicy(.regular)
+
+        if historyWindow == nil {
+            let historyView = HistoryView()
+
+            historyWindow = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            historyWindow?.title = "Tyler History"
+            historyWindow?.contentView = NSHostingView(rootView: historyView)
+            historyWindow?.center()
+            historyWindow?.isReleasedWhenClosed = false
+            historyWindow?.delegate = self
+        }
+
+        historyWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     @objc private func quitApp() {
         NSApp.terminate(nil)
     }
@@ -139,9 +165,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // MARK: - NSWindowDelegate
 
     func windowWillClose(_ notification: Notification) {
-        // Return to accessory mode when settings window closes
-        if notification.object as? NSWindow == settingsWindow {
-            NSApp.setActivationPolicy(.accessory)
+        // Return to accessory mode when all windows are closed
+        if let closingWindow = notification.object as? NSWindow,
+           closingWindow == settingsWindow || closingWindow == historyWindow {
+            // Only go back to accessory mode if no other windows are visible
+            let settingsVisible = settingsWindow?.isVisible == true && settingsWindow != closingWindow
+            let historyVisible = historyWindow?.isVisible == true && historyWindow != closingWindow
+
+            if !settingsVisible && !historyVisible {
+                NSApp.setActivationPolicy(.accessory)
+            }
         }
     }
 }
