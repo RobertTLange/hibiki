@@ -44,24 +44,24 @@ final class StreamingAudioPlayer {
     }
 
     func enqueue(pcmData: Data) {
-        print("[Tyler] 🎵 AudioPlayer.enqueue: \(pcmData.count) bytes")
+        print("[Hibiki] 🎵 AudioPlayer.enqueue: \(pcmData.count) bytes")
         bufferQueue.async { [weak self] in
             guard let self = self else { return }
 
             // Convert raw bytes to AVAudioPCMBuffer
             guard let buffer = self.createBuffer(from: pcmData) else {
-                print("[Tyler] ❌ Failed to create audio buffer")
+                print("[Hibiki] ❌ Failed to create audio buffer")
                 return
             }
 
             self.pendingBuffers.append(buffer)
             self.bufferedSampleCount += Int(buffer.frameLength)
-            print("[Tyler] 🎵 Buffered samples: \(self.bufferedSampleCount)/\(self.minimumBufferSize)")
+            print("[Hibiki] 🎵 Buffered samples: \(self.bufferedSampleCount)/\(self.minimumBufferSize)")
 
             // Start playback once we have enough buffered
             if !self.hasStartedPlayback &&
                self.bufferedSampleCount >= self.minimumBufferSize {
-                print("[Tyler] 🎵 Starting playback...")
+                print("[Hibiki] 🎵 Starting playback...")
                 self.startPlayback()
             } else if self.hasStartedPlayback {
                 // Schedule buffer immediately if already playing
@@ -93,14 +93,14 @@ final class StreamingAudioPlayer {
     private func startPlayback() {
         do {
             if !isEngineRunning {
-                print("[Tyler] 🎵 Starting audio engine...")
+                print("[Hibiki] 🎵 Starting audio engine...")
                 try engine.start()
                 isEngineRunning = true
-                print("[Tyler] ✅ Audio engine started")
+                print("[Hibiki] ✅ Audio engine started")
             }
 
             // Schedule all pending buffers
-            print("[Tyler] 🎵 Scheduling \(pendingBuffers.count) pending buffers")
+            print("[Hibiki] 🎵 Scheduling \(pendingBuffers.count) pending buffers")
             for buffer in pendingBuffers {
                 scheduleBuffer(buffer)
             }
@@ -108,9 +108,9 @@ final class StreamingAudioPlayer {
 
             playerNode.play()
             hasStartedPlayback = true
-            print("[Tyler] ✅ Audio playback started")
+            print("[Hibiki] ✅ Audio playback started")
         } catch {
-            print("[Tyler] ❌ Failed to start audio engine: \(error)")
+            print("[Hibiki] ❌ Failed to start audio engine: \(error)")
         }
     }
 

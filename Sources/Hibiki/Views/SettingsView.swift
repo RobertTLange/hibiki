@@ -92,7 +92,7 @@ struct SettingsView: View {
                                     .font(.caption)
                                     .fontWeight(.medium)
 
-                                Text("1. Click 'Open System Settings' below\n2. Click the + button\n3. Click 'Reveal in Finder' below, then drag Tyler to the list\n4. Make sure Tyler's toggle is ON\n5. Click 'Restart Tyler'")
+                                Text("1. Click 'Open System Settings' below\n2. Click the + button\n3. Click 'Reveal in Finder' below, then drag Hibiki to the list\n4. Make sure Hibiki's toggle is ON\n5. Click 'Restart Hibiki'")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
 
@@ -114,13 +114,13 @@ struct SettingsView: View {
                                     revealInFinder()
                                 }
 
-                                Button("Restart Tyler") {
+                                Button("Restart Hibiki") {
                                     restartApp()
                                 }
                                 .buttonStyle(.borderedProminent)
                             }
                         } else {
-                            Text("Tyler can read selected text from other applications.")
+                            Text("Hibiki can read selected text from other applications.")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -176,7 +176,7 @@ struct SettingsView: View {
         // AXIsProcessTrusted() is the authoritative check
         hasAccessibility = AXIsProcessTrusted()
         PermissionManager.shared.checkAllPermissions()
-        print("[Tyler] AXIsProcessTrusted: \(hasAccessibility)")
+        print("[Hibiki] AXIsProcessTrusted: \(hasAccessibility)")
     }
 
     private func revealInFinder() {
@@ -207,11 +207,11 @@ struct SettingsView: View {
             // Running as bare executable (e.g., swift run) - execute directly
             task.arguments = ["-c", "sleep 0.5 && \"\(execPath)\""]
         } else {
-            print("[Tyler] Could not determine path to restart")
+            print("[Hibiki] Could not determine path to restart")
             return
         }
 
-        print("[Tyler] Restarting with: \(task.arguments ?? [])")
+        print("[Hibiki] Restarting with: \(task.arguments ?? [])")
         task.launch()
         NSApp.terminate(nil)
     }
