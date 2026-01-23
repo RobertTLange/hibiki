@@ -6,6 +6,15 @@ final class StreamingAudioPlayer {
     // Expose engine for audio level monitoring
     private(set) var audioEngine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
+    private let formatConverterMixer = AVAudioMixerNode()  // Converts Int16 -> Float for time pitch
+    private let timePitchNode = AVAudioUnitTimePitch()
+
+    // Playback speed (1.0 = normal, up to 2.5x)
+    var playbackSpeed: Float = 1.0 {
+        didSet {
+            timePitchNode.rate = playbackSpeed
+        }
+    }
 
     // PCM format matching OpenAI TTS output: 24kHz, 16-bit signed int, mono
     private let pcmFormat: AVAudioFormat
@@ -24,6 +33,8 @@ final class StreamingAudioPlayer {
     private var scheduledBufferCount = 0
     private var completedBufferCount = 0
     private var isStreamFinished = false
+    private var isStopping = false  // Flag to ignore callbacks during stop
+    private var playbackGeneration = 0  // Incremented on each reset to invalidate old callbacks
     var onPlaybackComplete: (() -> Void)?
 
     private init() {
@@ -38,14 +49,32 @@ final class StreamingAudioPlayer {
     }
 
     private func setupAudioEngine() {
-        audioEngine.attach(playerNode)
+        // Only attach if not already attached
+        if playerNode.engine == nil {
+            audioEngine.attach(playerNode)
+            audioEngine.attach(formatConverterMixer)
+            audioEngine.attach(timePitchNode)
 
-        // Connect player to main mixer
-        audioEngine.connect(
-            playerNode,
-            to: audioEngine.mainMixerNode,
-            format: pcmFormat
-        )
+            // Connect player -> mixer (converts Int16 to Float) -> timePitch -> main mixer
+            audioEngine.connect(
+                playerNode,
+                to: formatConverterMixer,
+                format: pcmFormat
+            )
+            audioEngine.connect(
+                formatConverterMixer,
+                to: timePitchNode,
+                format: nil  // Mixer outputs float format
+            )
+            audioEngine.connect(
+                timePitchNode,
+                to: audioEngine.mainMixerNode,
+                format: nil
+            )
+        }
+
+        // Apply current playback speed
+        timePitchNode.rate = playbackSpeed
 
         audioEngine.prepare()
     }
@@ -53,7 +82,7 @@ final class StreamingAudioPlayer {
     func enqueue(pcmData: Data) {
         print("[Hibiki] 🎵 AudioPlayer.enqueue: \(pcmData.count) bytes")
         bufferQueue.async { [weak self] in
-            guard let self = self else { return }
+            guard let self = self, !self.isStopping else { return }
 
             // Convert raw bytes to AVAudioPCMBuffer
             guard let buffer = self.createBuffer(from: pcmData) else {
@@ -122,11 +151,15 @@ final class StreamingAudioPlayer {
     }
 
     private func scheduleBuffer(_ buffer: AVAudioPCMBuffer) {
+        let generation = playbackGeneration
         scheduledBufferCount += 1
         playerNode.scheduleBuffer(buffer) { [weak self] in
             self?.bufferQueue.async {
-                self?.completedBufferCount += 1
-                self?.checkPlaybackComplete()
+                guard let self = self else { return }
+                // Ignore callbacks from old playback sessions or during stopping
+                guard !self.isStopping && self.playbackGeneration == generation else { return }
+                self.completedBufferCount += 1
+                self.checkPlaybackComplete()
             }
         }
     }
@@ -134,13 +167,15 @@ final class StreamingAudioPlayer {
     /// Call this when the TTS stream has finished sending data
     func markStreamComplete() {
         bufferQueue.async { [weak self] in
-            self?.isStreamFinished = true
-            self?.checkPlaybackComplete()
+            guard let self = self, !self.isStopping else { return }
+            self.isStreamFinished = true
+            self.checkPlaybackComplete()
         }
     }
 
     private func checkPlaybackComplete() {
         // Only fire completion when stream is done AND all buffers played
+        guard !isStopping else { return }
         if isStreamFinished && completedBufferCount >= scheduledBufferCount && scheduledBufferCount > 0 {
             DispatchQueue.main.async { [weak self] in
                 self?.onPlaybackComplete?()
@@ -149,25 +184,34 @@ final class StreamingAudioPlayer {
     }
 
     func stop() {
-        bufferQueue.async { [weak self] in
+        bufferQueue.sync { [weak self] in
             guard let self = self else { return }
+            self.isStopping = true
+            self.playbackGeneration += 1  // Invalidate all pending callbacks
+            
+            // Stop player node first (this cancels scheduled buffers)
             self.playerNode.stop()
+            
+            // Stop engine
             if self.isEngineRunning {
                 self.audioEngine.stop()
                 self.isEngineRunning = false
             }
+            
+            // Clear state
             self.pendingBuffers.removeAll()
             self.bufferedSampleCount = 0
             self.hasStartedPlayback = false
+            self.scheduledBufferCount = 0
+            self.completedBufferCount = 0
+            self.isStreamFinished = false
+            self.isStopping = false
         }
     }
 
     func reset() {
         stop()
-        bufferQueue.async { [weak self] in
-            self?.scheduledBufferCount = 0
-            self?.completedBufferCount = 0
-            self?.isStreamFinished = false
+        bufferQueue.sync { [weak self] in
             self?.setupAudioEngine()
         }
     }
