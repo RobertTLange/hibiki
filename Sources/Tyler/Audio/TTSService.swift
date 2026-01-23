@@ -5,12 +5,23 @@ enum TTSVoice: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+struct TTSResult {
+    let audioData: Data
+    let inputTokens: Int
+    let isTokenEstimated: Bool  // true if tokens were estimated, false if from API
+}
+
 final class TTSService: NSObject {
     private var currentTask: URLSessionDataTask?
     private var session: URLSession?
     private var onAudioChunk: ((Data) -> Void)?
-    private var onComplete: (() -> Void)?
+    private var onComplete: ((TTSResult) -> Void)?
     private var onError: ((Error) -> Void)?
+    private var accumulatedAudioData = Data()
+    private var inputTokens: Int = 0
+    private var isTokenEstimated: Bool = false
+    private var responseHeaders: [AnyHashable: Any] = [:]
+    private var inputText: String = ""
 
     func streamSpeech(
         text: String,
@@ -18,11 +29,18 @@ final class TTSService: NSObject {
         apiKey: String,
         instructions: String = "Speak naturally and clearly.",
         onAudioChunk: @escaping (Data) -> Void,
-        onComplete: @escaping () -> Void,
+        onComplete: @escaping (TTSResult) -> Void,
         onError: @escaping (Error) -> Void
     ) {
         print("[Tyler] TTSService.streamSpeech called")
         print("[Tyler] Text length: \(text.count), voice: \(voice.rawValue)")
+
+        // Reset accumulated data for new request
+        accumulatedAudioData = Data()
+        inputTokens = 0
+        isTokenEstimated = false
+        responseHeaders = [:]
+        inputText = text
 
         self.onAudioChunk = onAudioChunk
         self.onComplete = onComplete
@@ -80,6 +98,7 @@ final class TTSService: NSObject {
 extension TTSService: URLSessionDataDelegate {
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         print("[Tyler] 📦 Received data chunk: \(data.count) bytes")
+        accumulatedAudioData.append(data)
         onAudioChunk?(data)
     }
 
@@ -88,19 +107,91 @@ extension TTSService: URLSessionDataDelegate {
             // Check if it's a cancellation
             if (error as NSError).code == NSURLErrorCancelled {
                 print("[Tyler] Request cancelled")
+                accumulatedAudioData = Data()
+                inputTokens = 0
+                isTokenEstimated = false
+                inputText = ""
                 return
             }
             print("[Tyler] ❌ Network error: \(error.localizedDescription)")
+            accumulatedAudioData = Data()
+            inputTokens = 0
+            isTokenEstimated = false
+            inputText = ""
             onError?(error)
         } else {
-            print("[Tyler] ✅ Request completed successfully")
-            onComplete?()
+            // Try to parse the response for usage info (fallback check)
+            parseResponseForUsage()
+            
+            // If we still don't have tokens from headers or body, estimate from input text
+            if inputTokens == 0 && !inputText.isEmpty {
+                // Rough estimation: ~4 characters per token for English text
+                // This is a common approximation for GPT tokenizers
+                inputTokens = max(1, inputText.count / 4)
+                isTokenEstimated = true
+                print("[Tyler] 📊 Estimated input tokens from text length: \(inputTokens) (from \(inputText.count) chars)")
+            }
+
+            print("[Tyler] ✅ Request completed successfully, total audio: \(accumulatedAudioData.count) bytes, inputTokens: \(inputTokens)\(isTokenEstimated ? " (estimated)" : "")")
+            let result = TTSResult(audioData: accumulatedAudioData, inputTokens: inputTokens, isTokenEstimated: isTokenEstimated)
+            accumulatedAudioData = Data()
+            inputTokens = 0
+            isTokenEstimated = false
+            inputText = ""
+            onComplete?(result)
+        }
+    }
+
+    private func parseResponseForUsage() {
+        // For TTS API, usage info comes from HTTP headers (extracted in extractUsageFromHeaders)
+        // The response body contains raw audio data, not JSON
+        // This method is kept for compatibility but usage is already extracted from headers
+        
+        // If we still don't have tokens, it means the header wasn't present
+        // Log for debugging purposes
+        if inputTokens == 0 {
+            print("[Tyler] ⚠️ Input tokens still 0 - checking if response body contains error JSON")
+            
+            // Only try to parse as JSON if it looks like an error response (not binary audio)
+            if let responseString = String(data: accumulatedAudioData, encoding: .utf8),
+               responseString.hasPrefix("{") {
+                let preview = String(responseString.prefix(500))
+                print("[Tyler] 📄 Response preview (possible error): \(preview)")
+                
+                if let json = try? JSONSerialization.jsonObject(with: accumulatedAudioData) as? [String: Any] {
+                    // Check for error response
+                    if let error = json["error"] as? [String: Any] {
+                        print("[Tyler] ❌ API returned error in body: \(error)")
+                    }
+                    // Check for usage in body (unlikely for TTS but just in case)
+                    if let usage = json["usage"] as? [String: Any],
+                       let tokens = usage["input_tokens"] as? Int {
+                        inputTokens = tokens
+                        print("[Tyler] 📊 Input tokens from response body: \(inputTokens)")
+                    }
+                }
+            }
         }
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         if let httpResponse = response as? HTTPURLResponse {
             print("[Tyler] 📡 HTTP response: \(httpResponse.statusCode)")
+            print("[Tyler] 📡 Content-Type: \(httpResponse.allHeaderFields["Content-Type"] ?? "unknown")")
+
+            // Store headers for later usage extraction
+            responseHeaders = httpResponse.allHeaderFields
+
+            // Log all headers for debugging
+            print("[Tyler] 📡 Response headers:")
+            for (key, value) in httpResponse.allHeaderFields {
+                print("[Tyler]   \(key): \(value)")
+            }
+
+            // Extract usage from headers if available
+            // OpenAI TTS returns usage in x-openai-* headers
+            extractUsageFromHeaders(httpResponse.allHeaderFields)
+
             if httpResponse.statusCode != 200 {
                 print("[Tyler] ❌ API error: HTTP \(httpResponse.statusCode)")
                 onError?(TTSError.apiError(statusCode: httpResponse.statusCode))
@@ -109,6 +200,49 @@ extension TTSService: URLSessionDataDelegate {
             }
         }
         completionHandler(.allow)
+    }
+
+    private func extractUsageFromHeaders(_ headers: [AnyHashable: Any]) {
+        // OpenAI returns usage info in various header formats
+        // Check for common patterns (case-insensitive lookup)
+        let headerDict = Dictionary(uniqueKeysWithValues: headers.map { 
+            (String(describing: $0.key).lowercased(), $0.value) 
+        })
+        
+        // Try different possible header names for input tokens USED in this request
+        // NOTE: Do NOT include rate limit headers like x-ratelimit-remaining-tokens
+        // as those show quota remaining, not tokens used
+        let possibleTokenHeaders = [
+            "x-openai-input-tokens",
+            "openai-input-tokens", 
+            "x-input-tokens",
+            "x-request-input-tokens",
+            "openai-processing-tokens"
+        ]
+        
+        for headerName in possibleTokenHeaders {
+            if let value = headerDict[headerName] {
+                if let intValue = value as? Int {
+                    inputTokens = intValue
+                    print("[Tyler] 📊 Input tokens from header '\(headerName)': \(inputTokens)")
+                    return
+                } else if let stringValue = value as? String, let intValue = Int(stringValue) {
+                    inputTokens = intValue
+                    print("[Tyler] 📊 Input tokens from header '\(headerName)': \(inputTokens)")
+                    return
+                }
+            }
+        }
+        
+        // Log available headers for debugging to help identify the correct one
+        print("[Tyler] ⚠️ No input token header found. Available headers with numeric values:")
+        for (key, value) in headerDict {
+            if let strVal = value as? String, Int(strVal) != nil {
+                print("[Tyler]   - \(key): \(strVal)")
+            } else if value is Int {
+                print("[Tyler]   - \(key): \(value)")
+            }
+        }
     }
 }
 

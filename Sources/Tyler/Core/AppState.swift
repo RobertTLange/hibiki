@@ -104,8 +104,18 @@ final class AppState: ObservableObject {
                     self?.logger.debug("Received audio chunk: \(data.count) bytes", source: "AppState")
                     self?.audioPlayer.enqueue(pcmData: data)
                 },
-                onComplete: { [weak self] in
-                    self?.logger.info("TTS stream complete", source: "AppState")
+                onComplete: { [weak self] result in
+                    self?.logger.info("TTS stream complete, audio size: \(result.audioData.count) bytes, inputTokens: \(result.inputTokens)", source: "AppState")
+
+                    // Save to history
+                    HistoryManager.shared.addEntry(
+                        text: text,
+                        voice: voice.rawValue,
+                        inputTokens: result.inputTokens,
+                        audioData: result.audioData
+                    )
+                    self?.logger.info("Saved to history", source: "AppState")
+
                     Task { @MainActor in
                         // Small delay to let audio finish playing
                         try? await Task.sleep(nanoseconds: 500_000_000)
