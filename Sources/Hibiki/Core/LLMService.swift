@@ -7,6 +7,41 @@ struct LLMResult {
     let model: String
 }
 
+struct TranslationResult {
+    let translatedText: String
+    let inputTokens: Int
+    let outputTokens: Int
+    let model: String
+    let targetLanguage: TargetLanguage
+}
+
+enum TargetLanguage: String, CaseIterable, Identifiable {
+    case none = "none"
+    case english = "en"
+    case japanese = "ja"
+    case german = "de"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .none: return "None"
+        case .english: return "English"
+        case .japanese: return "Japanese"
+        case .german: return "German"
+        }
+    }
+
+    var languageName: String {
+        switch self {
+        case .none: return ""
+        case .english: return "English"
+        case .japanese: return "Japanese"
+        case .german: return "German"
+        }
+    }
+}
+
 enum LLMModel: String, CaseIterable, Identifiable {
     case gpt5Nano = "gpt-5-nano"
     case gpt5Mini = "gpt-5-mini"
@@ -281,12 +316,139 @@ final class LLMService {
         }
         
         logger.info("Streaming summarization complete: \(trimmedContent.count) chars, \(inputTokens) input tokens, \(outputTokens) output tokens", source: "LLMService")
-        
+
         return LLMResult(
             summarizedText: trimmedContent,
             inputTokens: inputTokens,
             outputTokens: outputTokens,
             model: model.rawValue
+        )
+    }
+
+    /// Streaming translation - yields text chunks as they arrive
+    func translateStreaming(
+        text: String,
+        targetLanguage: TargetLanguage,
+        model: LLMModel,
+        systemPrompt: String,
+        apiKey: String,
+        onChunk: @escaping (String) -> Void
+    ) async throws -> TranslationResult {
+        guard targetLanguage != .none else {
+            // No translation needed, return original text
+            return TranslationResult(
+                translatedText: text,
+                inputTokens: 0,
+                outputTokens: 0,
+                model: model.rawValue,
+                targetLanguage: targetLanguage
+            )
+        }
+
+        guard !apiKey.isEmpty else {
+            throw LLMError.missingAPIKey
+        }
+
+        guard let url = URL(string: "https://api.openai.com/v1/chat/completions") else {
+            throw LLMError.invalidURL
+        }
+
+        // Replace {language} placeholder with actual language name
+        let effectivePrompt = systemPrompt.replacingOccurrences(of: "{language}", with: targetLanguage.languageName)
+
+        logger.info("Starting streaming translation to \(targetLanguage.languageName) with model: \(model.rawValue)", source: "LLMService")
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 120
+
+        let body: [String: Any] = [
+            "model": model.rawValue,
+            "messages": [
+                ["role": "system", "content": effectivePrompt],
+                ["role": "user", "content": text]
+            ],
+            "max_completion_tokens": 8192,
+            "stream": true,
+            "stream_options": ["include_usage": true]
+        ]
+
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        logger.info("Sending streaming translation request to OpenAI API...", source: "LLMService")
+
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw LLMError.apiError(statusCode: 0, message: "Invalid response")
+        }
+
+        logger.info("Translation streaming response status: \(httpResponse.statusCode)", source: "LLMService")
+
+        guard httpResponse.statusCode == 200 else {
+            var errorData = Data()
+            for try await byte in bytes {
+                errorData.append(byte)
+            }
+            let errorMessage = try? JSONSerialization.jsonObject(with: errorData) as? [String: Any]
+            let message = (errorMessage?["error"] as? [String: Any])?["message"] as? String
+            logger.error("Translation API error: HTTP \(httpResponse.statusCode) - \(message ?? "unknown")", source: "LLMService")
+            throw LLMError.apiError(statusCode: httpResponse.statusCode, message: message)
+        }
+
+        var fullContent = ""
+        var inputTokens = 0
+        var outputTokens = 0
+
+        for try await line in bytes.lines {
+            guard line.hasPrefix("data: ") else { continue }
+
+            let jsonString = String(line.dropFirst(6))
+
+            if jsonString == "[DONE]" {
+                logger.debug("Translation stream complete signal received", source: "LLMService")
+                break
+            }
+
+            guard let jsonData = jsonString.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+                continue
+            }
+
+            if let usage = json["usage"] as? [String: Any] {
+                inputTokens = usage["prompt_tokens"] as? Int ?? inputTokens
+                outputTokens = usage["completion_tokens"] as? Int ?? outputTokens
+            }
+
+            if let choices = json["choices"] as? [[String: Any]],
+               let firstChoice = choices.first,
+               let delta = firstChoice["delta"] as? [String: Any],
+               let content = delta["content"] as? String {
+                fullContent += content
+                logger.debug("Translation stream chunk: '\(content)'", source: "LLMService")
+
+                await MainActor.run {
+                    onChunk(content)
+                }
+            }
+        }
+
+        let trimmedContent = fullContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedContent.isEmpty else {
+            logger.error("Streaming translation returned empty content", source: "LLMService")
+            throw LLMError.emptyResponse
+        }
+
+        logger.info("Streaming translation complete: \(trimmedContent.count) chars, \(inputTokens) input tokens, \(outputTokens) output tokens", source: "LLMService")
+
+        return TranslationResult(
+            translatedText: trimmedContent,
+            inputTokens: inputTokens,
+            outputTokens: outputTokens,
+            model: model.rawValue,
+            targetLanguage: targetLanguage
         )
     }
 }

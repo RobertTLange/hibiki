@@ -44,7 +44,12 @@ final class HistoryManager {
         summarizedText: String? = nil,
         llmInputTokens: Int? = nil,
         llmOutputTokens: Int? = nil,
-        llmModel: String? = nil
+        llmModel: String? = nil,
+        translatedText: String? = nil,
+        translationInputTokens: Int? = nil,
+        translationOutputTokens: Int? = nil,
+        translationModel: String? = nil,
+        targetLanguage: String? = nil
     ) -> HistoryEntry {
         let audioFileName = "\(UUID().uuidString).pcm"
         let audioURL = audioDirectory.appendingPathComponent(audioFileName)
@@ -64,7 +69,12 @@ final class HistoryManager {
             summarizedText: summarizedText,
             llmInputTokens: llmInputTokens,
             llmOutputTokens: llmOutputTokens,
-            llmModel: llmModel
+            llmModel: llmModel,
+            translatedText: translatedText,
+            translationInputTokens: translationInputTokens,
+            translationOutputTokens: translationOutputTokens,
+            translationModel: translationModel,
+            targetLanguage: targetLanguage
         )
 
         DispatchQueue.main.async {
