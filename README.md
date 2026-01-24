@@ -72,6 +72,19 @@ open .build/Hibiki.app
 # Or just run ./build.sh --run
 ```
 
+### Create DMG installer
+
+To create a DMG file for distribution:
+
+```bash
+# Build release version and create DMG
+./build.sh --dmg
+
+# The DMG will be created at .build/Hibiki.dmg
+```
+
+Open the DMG and drag Hibiki to your Applications folder to install.
+
 ### Development
 
 ```bash
