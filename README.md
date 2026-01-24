@@ -1,12 +1,12 @@
 # Hibiki
 
-```                                       .---------.
- _     _ _     _ _    _               .---'         '---.  
-| |   (_) |   (_) |  (_)           .-'     .-------.     '-. 
-| |__  _| |__  _| | ___           /     .--'       '--.      \ 
-| '_ \| | '_ \| | |/ / |        /     /     .-----.     \      \
-| | | | | |_) | |   <| |      /     /     /         \     \      \ 
-|_| |_|_|_.__/|_|_|\_\_|     |     |     |    (O)    |     |      |
+```                                       
+ _     _ _     _ _    _              .-----------.  
+| |   (_) |   (_) |  (_)          .-'   .-----.   '-. 
+| |__  _| |__  _| | ___          /   .--'     '--.   \ 
+| '_ \| | '_ \| | |/ / |        /   /   .-----.   \   \
+| | | | | |_) | |   <| |       /   /   /       \   \   \ 
+|_| |_|_|_.__/|_|_|\_\_|      |   |   |   (O)   |   |   |
 ```
 
 
@@ -63,8 +63,13 @@ cd hibiki
 # Build the app
 ./build.sh
 
+# Optionally set OpenAI API Key
+export OPENAI_API_KEY='sk-...'
+
 # Run the app
 open .build/Hibiki.app
+
+# Or just run ./build.sh --run
 ```
 
 ### Development
@@ -173,7 +178,3 @@ Sources/Hibiki/
         ├── HistoryTab.swift         # TTS history
         └── StatisticsTab.swift      # Usage statistics
 ```
-
-## License
-
-MIT
