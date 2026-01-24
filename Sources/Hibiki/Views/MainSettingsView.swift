@@ -2,9 +2,9 @@ import SwiftUI
 
 enum SettingsTab: Int, CaseIterable {
     case configuration = 0
-    case debug = 1
-    case history = 2
-    case statistics = 3
+    case history = 1
+    case statistics = 2
+    case debug = 3
 
     var title: String {
         switch self {
@@ -37,12 +37,6 @@ struct MainSettingsView: View {
                 }
                 .tag(SettingsTab.configuration)
 
-            DebugTab()
-                .tabItem {
-                    Label(SettingsTab.debug.title, systemImage: SettingsTab.debug.icon)
-                }
-                .tag(SettingsTab.debug)
-
             HistoryTab()
                 .tabItem {
                     Label(SettingsTab.history.title, systemImage: SettingsTab.history.icon)
@@ -54,7 +48,13 @@ struct MainSettingsView: View {
                     Label(SettingsTab.statistics.title, systemImage: SettingsTab.statistics.icon)
                 }
                 .tag(SettingsTab.statistics)
+
+            DebugTab()
+                .tabItem {
+                    Label(SettingsTab.debug.title, systemImage: SettingsTab.debug.icon)
+                }
+                .tag(SettingsTab.debug)
         }
-        .frame(minWidth: 700, minHeight: 550)
+        .frame(minWidth: 850, minHeight: 550)
     }
 }

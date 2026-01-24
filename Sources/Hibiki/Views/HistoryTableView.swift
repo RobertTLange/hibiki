@@ -85,7 +85,7 @@ struct HistoryTableView: View {
             }
             .width(55)
 
-            TableColumn("Trans.") { entry in
+            TableColumn("Translate") { entry in
                 Text(entry.formattedTranslationCost)
                     .font(.system(.caption, design: .monospaced))
                     .foregroundColor(entry.wasTranslated ? Color(red: 0.3, green: 0.55, blue: 0.85) : .secondary)

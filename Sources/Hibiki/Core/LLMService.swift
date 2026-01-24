@@ -18,8 +18,10 @@ struct TranslationResult {
 enum TargetLanguage: String, CaseIterable, Identifiable {
     case none = "none"
     case english = "en"
-    case japanese = "ja"
+    case french = "fr"
     case german = "de"
+    case japanese = "ja"
+    case spanish = "es"
 
     var id: String { rawValue }
 
@@ -27,8 +29,10 @@ enum TargetLanguage: String, CaseIterable, Identifiable {
         switch self {
         case .none: return "None"
         case .english: return "English"
-        case .japanese: return "Japanese"
+        case .french: return "French"
         case .german: return "German"
+        case .japanese: return "Japanese"
+        case .spanish: return "Spanish"
         }
     }
 
@@ -36,8 +40,43 @@ enum TargetLanguage: String, CaseIterable, Identifiable {
         switch self {
         case .none: return ""
         case .english: return "English"
-        case .japanese: return "Japanese"
+        case .french: return "French"
         case .german: return "German"
+        case .japanese: return "Japanese"
+        case .spanish: return "Spanish"
+        }
+    }
+
+    /// Default translation prompt written in the target language
+    var defaultPrompt: String {
+        switch self {
+        case .none:
+            return ""
+        case .english:
+            return """
+                Translate the following text into English. Preserve the meaning, tone, and style. \
+                Output only the translation without any explanations or notes.
+                """
+        case .french:
+            return """
+                Traduisez le texte suivant en français. Préservez le sens, le ton et le style. \
+                Ne produisez que la traduction, sans explications ni notes.
+                """
+        case .german:
+            return """
+                Übersetze den folgenden Text ins Deutsche. Bewahre die Bedeutung, den Ton und den Stil. \
+                Gib nur die Übersetzung aus, ohne Erklärungen oder Anmerkungen.
+                """
+        case .japanese:
+            return """
+                以下のテキストを日本語に翻訳してください。意味、トーン、スタイルを保持してください。\
+                説明やメモを付けずに、翻訳のみを出力してください。
+                """
+        case .spanish:
+            return """
+                Traduce el siguiente texto al español. Conserva el significado, el tono y el estilo. \
+                Produce únicamente la traducción, sin explicaciones ni notas.
+                """
         }
     }
 }
@@ -353,9 +392,6 @@ final class LLMService {
             throw LLMError.invalidURL
         }
 
-        // Replace {language} placeholder with actual language name
-        let effectivePrompt = systemPrompt.replacingOccurrences(of: "{language}", with: targetLanguage.languageName)
-
         logger.info("Starting streaming translation to \(targetLanguage.languageName) with model: \(model.rawValue)", source: "LLMService")
 
         var request = URLRequest(url: url)
@@ -367,7 +403,7 @@ final class LLMService {
         let body: [String: Any] = [
             "model": model.rawValue,
             "messages": [
-                ["role": "system", "content": effectivePrompt],
+                ["role": "system", "content": systemPrompt],
                 ["role": "user", "content": text]
             ],
             "max_completion_tokens": 8192,
