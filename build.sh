@@ -1,15 +1,33 @@
 #!/bin/bash
 set -e
 
-echo "Building Hibiki..."
-swift build
+# Parse arguments
+BUILD_DMG=false
+RUN_APP=false
+for arg in "$@"; do
+    case $arg in
+        --dmg) BUILD_DMG=true ;;
+        --run) RUN_APP=true ;;
+    esac
+done
+
+# Use release build for DMG, debug for regular builds
+if [ "$BUILD_DMG" = true ]; then
+    echo "Building Hibiki (release)..."
+    swift build -c release
+    EXECUTABLE=".build/release/Hibiki"
+else
+    echo "Building Hibiki..."
+    swift build
+    EXECUTABLE=".build/debug/Hibiki"
+fi
 
 APP_DIR=".build/Hibiki.app"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 
 # Copy executable
-cp .build/debug/Hibiki "$APP_DIR/Contents/MacOS/Hibiki"
+cp "$EXECUTABLE" "$APP_DIR/Contents/MacOS/Hibiki"
 
 # Create app icon (convert PNG to ICNS)
 ICONSET_DIR="$APP_DIR/Contents/Resources/AppIcon.iconset"
@@ -32,8 +50,9 @@ iconutil -c icns "$ICONSET_DIR" -o "$APP_DIR/Contents/Resources/AppIcon.icns"
 rm -rf "$ICONSET_DIR"
 
 # Copy resource bundles (for runtime resources)
-if [ -d ".build/debug/Hibiki_Hibiki.bundle" ]; then
-    cp -R .build/debug/Hibiki_Hibiki.bundle "$APP_DIR/Contents/Resources/"
+BUILD_DIR=$(dirname "$EXECUTABLE")
+if [ -d "$BUILD_DIR/Hibiki_Hibiki.bundle" ]; then
+    cp -R "$BUILD_DIR/Hibiki_Hibiki.bundle" "$APP_DIR/Contents/Resources/"
 fi
 
 # Create Info.plist
@@ -78,8 +97,32 @@ echo "Built Hibiki.app at: $APP_DIR"
 # Reset accessibility permission so it re-registers with the .app bundle (and its icon)
 tccutil reset Accessibility com.superlisten.hibiki 2>/dev/null || true
 
+# Create DMG if requested
+if [ "$BUILD_DMG" = true ]; then
+    echo "Creating DMG..."
+    DMG_DIR=".build/dmg"
+    DMG_PATH=".build/Hibiki.dmg"
+
+    # Clean up any previous DMG build
+    rm -rf "$DMG_DIR"
+    rm -f "$DMG_PATH"
+
+    # Create DMG staging directory
+    mkdir -p "$DMG_DIR"
+    cp -R "$APP_DIR" "$DMG_DIR/"
+    ln -s /Applications "$DMG_DIR/Applications"
+
+    # Create DMG
+    hdiutil create -volname "Hibiki" -srcfolder "$DMG_DIR" -ov -format UDZO "$DMG_PATH"
+
+    # Clean up staging directory
+    rm -rf "$DMG_DIR"
+
+    echo "Created DMG at: $DMG_PATH"
+fi
+
 # Optionally launch
-if [ "$1" == "--run" ]; then
+if [ "$RUN_APP" = true ]; then
     # Kill existing instances
     pkill -f "Hibiki.app" 2>/dev/null || true
     sleep 1
