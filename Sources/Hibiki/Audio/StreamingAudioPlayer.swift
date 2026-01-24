@@ -12,6 +12,12 @@ final class StreamingAudioPlayer {
     // Playback speed (1.0 = normal, up to 2.5x)
     var playbackSpeed: Float = 1.0 {
         didSet {
+            // Track accumulated progress before speed change
+            if hasStartedPlayback, let startTime = playbackStartTime {
+                let elapsed = Date().timeIntervalSince(startTime)
+                accumulatedVirtualTime += elapsed * Double(oldValue)
+                playbackStartTime = Date()  // Reset start time for new speed segment
+            }
             timePitchNode.rate = playbackSpeed
             timePitchNode.bypass = playbackSpeed == 1.0
         }
@@ -39,6 +45,35 @@ final class StreamingAudioPlayer {
     private var isStopping = false  // Flag to ignore callbacks during stop
     private var playbackGeneration = 0  // Incremented on each reset to invalidate old callbacks
     var onPlaybackComplete: (() -> Void)?
+
+    // Playback position tracking for text highlighting
+    private var totalScheduledSamples: Int64 = 0
+    private var playbackStartTime: Date?
+    private var estimatedTotalDuration: TimeInterval = 0
+    private var accumulatedVirtualTime: TimeInterval = 0  // Tracks progress across speed changes
+
+    /// Set the estimated duration based on text length (called before playback starts)
+    /// Uses ~15.5 chars/second as typical TTS speaking rate at 1x speed
+    func setEstimatedDuration(forTextLength charCount: Int) {
+        estimatedTotalDuration = Double(charCount) / 15.5
+    }
+
+    /// Current playback progress as a value from 0.0 to 1.0
+    /// Uses time-based estimation to avoid jumpiness from streaming audio
+    var currentPlaybackProgress: Double {
+        guard let startTime = playbackStartTime,
+              estimatedTotalDuration > 0,
+              hasStartedPlayback, !isStopping else {
+            return 0.0
+        }
+
+        let elapsed = Date().timeIntervalSince(startTime)
+        // Account for playback speed and accumulated time from previous speed segments
+        let currentSegmentVirtualTime = elapsed * Double(playbackSpeed)
+        let totalVirtualTime = accumulatedVirtualTime + currentSegmentVirtualTime
+        let progress = totalVirtualTime / estimatedTotalDuration
+        return min(1.0, max(0.0, progress))
+    }
 
     private init() {
         pcmFormat = AVAudioFormat(
@@ -184,6 +219,7 @@ final class StreamingAudioPlayer {
 
             playerNode.play()
             hasStartedPlayback = true
+            playbackStartTime = Date()
             print("[Hibiki] ✅ Audio playback started")
         } catch {
             print("[Hibiki] ❌ Failed to start audio engine: \(error)")
@@ -217,6 +253,7 @@ final class StreamingAudioPlayer {
     private func scheduleBuffer(_ buffer: AVAudioPCMBuffer) {
         let generation = playbackGeneration
         scheduledBufferCount += 1
+        totalScheduledSamples += Int64(buffer.frameLength)
         playerNode.scheduleBuffer(buffer) { [weak self] in
             self?.bufferQueue.async {
                 guard let self = self else { return }
@@ -283,6 +320,10 @@ final class StreamingAudioPlayer {
             self.scheduledBufferCount = 0
             self.completedBufferCount = 0
             self.isStreamFinished = false
+            self.totalScheduledSamples = 0
+            self.playbackStartTime = nil
+            self.estimatedTotalDuration = 0
+            self.accumulatedVirtualTime = 0
             self.isStopping = false
         }
     }

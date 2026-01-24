@@ -12,8 +12,35 @@ struct AudioPlayerPanel: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
             
-            // Streaming summary text below waveform (during summarization)
-            if appState.isSummarizing || !appState.streamingSummary.isEmpty {
+            // Text display with highlighting
+            // Priority:
+            // 1. During active translation (LLM streaming): show streaming translation
+            // 2. During active summarization (LLM streaming): show streaming summary
+            // 3. During TTS playback (including after summarization/translation): show highlighted text
+            if appState.isTranslating {
+                // Streaming translation text (during active translation)
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical, showsIndicators: true) {
+                        Text(appState.streamingTranslation.isEmpty ? " " : appState.streamingTranslation)
+                            .font(.system(size: 12))
+                            .foregroundColor(.primary)
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                            .padding(8)
+                            .id("streamingTranslation")
+                    }
+                    .frame(height: 80)
+                    .frame(maxWidth: .infinity)
+                    .background(Color(red: 0.3, green: 0.55, blue: 0.85).opacity(0.08))
+                    .cornerRadius(6)
+                    .padding(.horizontal, 12)
+                    .onChange(of: appState.streamingTranslation) { _, _ in
+                        withAnimation(.easeOut(duration: 0.1)) {
+                            proxy.scrollTo("streamingTranslation", anchor: .bottom)
+                        }
+                    }
+                }
+            } else if appState.isSummarizing {
+                // Streaming summary text (during active summarization)
                 ScrollViewReader { proxy in
                     ScrollView(.vertical, showsIndicators: true) {
                         Text(appState.streamingSummary.isEmpty ? " " : appState.streamingSummary)
@@ -34,27 +61,30 @@ struct AudioPlayerPanel: View {
                         }
                     }
                 }
-            }
-
-            // Streaming translation text below waveform (during translation)
-            if appState.isTranslating || !appState.streamingTranslation.isEmpty {
+            } else if appState.isPlaying && !appState.displayText.isEmpty {
+                // Highlighted text during TTS playback (direct TTS, or after summarization/translation)
                 ScrollViewReader { proxy in
                     ScrollView(.vertical, showsIndicators: true) {
-                        Text(appState.streamingTranslation.isEmpty ? " " : appState.streamingTranslation)
-                            .font(.system(size: 12))
-                            .foregroundColor(Color(red: 0.3, green: 0.55, blue: 0.85))
-                            .frame(maxWidth: .infinity, alignment: .topLeading)
-                            .padding(8)
-                            .id("streamingTranslation")
+                        HighlightedTextView(
+                            text: appState.displayText,
+                            highlightIndex: appState.highlightCharacterIndex,
+                            highlightColor: highlightColorForMode
+                        )
+                        .padding(8)
+                        // Dynamic ID that changes every ~250 chars (roughly 5-6 lines) for scroll tracking
+                        .id("segment_\(appState.highlightCharacterIndex / 250)")
                     }
                     .frame(height: 80)
                     .frame(maxWidth: .infinity)
-                    .background(Color(red: 0.3, green: 0.55, blue: 0.85).opacity(0.08))
+                    .background(backgroundColorForMode)
                     .cornerRadius(6)
                     .padding(.horizontal, 12)
-                    .onChange(of: appState.streamingTranslation) { _, _ in
-                        withAnimation(.easeOut(duration: 0.1)) {
-                            proxy.scrollTo("streamingTranslation", anchor: .bottom)
+                    .onChange(of: appState.highlightCharacterIndex / 250) { oldSegment, newSegment in
+                        // Only scroll when segment changes (not on every character)
+                        if newSegment != oldSegment {
+                            withAnimation(.easeInOut(duration: 0.6)) {
+                                proxy.scrollTo("segment_\(newSegment)", anchor: .center)
+                            }
                         }
                     }
                 }
@@ -102,7 +132,7 @@ struct AudioPlayerPanel: View {
 
                         Text("Translating...")
                             .font(.system(size: 13))
-                            .foregroundColor(Color(red: 0.3, green: 0.55, blue: 0.85))
+                            .foregroundColor(.primary)
                     } else {
                         Image(systemName: "mic.fill")
                             .font(.system(size: 12))
@@ -165,6 +195,27 @@ struct AudioPlayerPanel: View {
     private var voiceDisplayName: String {
         // Capitalize the voice name
         appState.selectedVoice.capitalized
+    }
+
+    /// Highlight color based on playback mode
+    private var highlightColorForMode: Color {
+        // Check if this was a translation or summarization based on the content
+        if !appState.streamingTranslation.isEmpty {
+            return Color(red: 0.3, green: 0.55, blue: 0.85)  // Blue for translation
+        } else if !appState.streamingSummary.isEmpty {
+            return .orange  // Orange for summary
+        }
+        return .accentColor  // Default for direct TTS
+    }
+
+    /// Background color for the text view based on playback mode
+    private var backgroundColorForMode: Color {
+        if !appState.streamingTranslation.isEmpty {
+            return Color(red: 0.3, green: 0.55, blue: 0.85).opacity(0.08)
+        } else if !appState.streamingSummary.isEmpty {
+            return Color.primary.opacity(0.05)
+        }
+        return Color.primary.opacity(0.05)  // Default
     }
 }
 
