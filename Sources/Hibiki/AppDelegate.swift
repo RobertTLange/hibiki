@@ -121,7 +121,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             button.title = "T"
 
             // Try SF Symbol
-            if let image = NSImage(systemSymbolName: "speaker.fill", accessibilityDescription: "Hibiki TTS") {
+            if let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Hibiki TTS") {
                 image.size = NSSize(width: 18, height: 18)
                 image.isTemplate = true
                 button.image = image
@@ -147,7 +147,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 .environmentObject(AppState.shared)
 
             mainWindow = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 750, height: 600),
+                contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable],
                 backing: .buffered,
                 defer: false

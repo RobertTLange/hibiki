@@ -19,7 +19,9 @@ let package = Package(
             path: "Sources/Hibiki",
             exclude: ["Resources/Info.plist"],
             resources: [
-                .copy("hibiki.png")
+                .copy("hibiki.png"),
+                .copy("Resources/AppIcon.icns"),
+                .process("Resources/Assets.xcassets")
             ]
         )
     ]

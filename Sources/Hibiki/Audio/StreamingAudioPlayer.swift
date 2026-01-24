@@ -13,15 +13,18 @@ final class StreamingAudioPlayer {
     var playbackSpeed: Float = 1.0 {
         didSet {
             timePitchNode.rate = playbackSpeed
+            timePitchNode.bypass = playbackSpeed == 1.0
         }
     }
 
     // PCM format matching OpenAI TTS output: 24kHz, 16-bit signed int, mono
     private let pcmFormat: AVAudioFormat
+    private let floatFormat: AVAudioFormat
 
     // Buffer queue for smooth playback
     private var pendingBuffers: [AVAudioPCMBuffer] = []
     private let bufferQueue = DispatchQueue(label: "audio.buffer.queue")
+    private var pendingPCMBytes = Data()
 
     // Minimum buffer before starting playback (latency tradeoff)
     private let minimumBufferSize = 4800 // 0.2 seconds at 24kHz
@@ -44,6 +47,12 @@ final class StreamingAudioPlayer {
             channels: 1,
             interleaved: true
         )!
+        floatFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 24000,
+            channels: 1,
+            interleaved: false
+        )!
 
         setupAudioEngine()
     }
@@ -64,17 +73,18 @@ final class StreamingAudioPlayer {
             audioEngine.connect(
                 formatConverterMixer,
                 to: timePitchNode,
-                format: nil  // Mixer outputs float format
+                format: floatFormat
             )
             audioEngine.connect(
                 timePitchNode,
                 to: audioEngine.mainMixerNode,
-                format: nil
+                format: floatFormat
             )
         }
 
         // Apply current playback speed
         timePitchNode.rate = playbackSpeed
+        timePitchNode.bypass = playbackSpeed == 1.0
 
         audioEngine.prepare()
     }
@@ -84,46 +94,67 @@ final class StreamingAudioPlayer {
         bufferQueue.async { [weak self] in
             guard let self = self, !self.isStopping else { return }
 
-            // Convert raw bytes to AVAudioPCMBuffer
-            guard let buffer = self.createBuffer(from: pcmData) else {
-                print("[Hibiki] ❌ Failed to create audio buffer")
-                return
+            if !pcmData.isEmpty {
+                self.pendingPCMBytes.append(pcmData)
             }
 
-            self.pendingBuffers.append(buffer)
-            self.bufferedSampleCount += Int(buffer.frameLength)
-            print("[Hibiki] 🎵 Buffered samples: \(self.bufferedSampleCount)/\(self.minimumBufferSize)")
+            let bytesPerFrame = Int(self.pcmFormat.streamDescription.pointee.mBytesPerFrame)
+            let alignedByteCount = (self.pendingPCMBytes.count / bytesPerFrame) * bytesPerFrame
+            guard alignedByteCount > 0 else { return }
 
-            // Start playback once we have enough buffered
-            if !self.hasStartedPlayback &&
-               self.bufferedSampleCount >= self.minimumBufferSize {
-                print("[Hibiki] 🎵 Starting playback...")
-                self.startPlayback()
-            } else if self.hasStartedPlayback {
-                // Schedule buffer immediately if already playing
-                self.scheduleBuffer(buffer)
-            }
+            let alignedData = Data(self.pendingPCMBytes.prefix(alignedByteCount))
+            self.pendingPCMBytes.removeFirst(alignedByteCount)
+            self.enqueueAlignedData(alignedData)
         }
     }
 
     private func createBuffer(from data: Data) -> AVAudioPCMBuffer? {
-        let frameCount = UInt32(data.count / 2) // 16-bit = 2 bytes per sample
-
-        guard let buffer = AVAudioPCMBuffer(
-            pcmFormat: pcmFormat,
-            frameCapacity: frameCount
-        ) else { return nil }
-
-        buffer.frameLength = frameCount
-
-        // Copy data into buffer
-        data.withUnsafeBytes { rawBuffer in
-            if let baseAddress = rawBuffer.baseAddress {
-                memcpy(buffer.int16ChannelData![0], baseAddress, data.count)
-            }
+        let bytesPerFrame = Int(pcmFormat.streamDescription.pointee.mBytesPerFrame) // 2
+        guard data.count % bytesPerFrame == 0 else {
+            return nil
         }
+        let frameCount = data.count / bytesPerFrame
+        guard frameCount > 0 else { return nil }
+
+        let buffer = AVAudioPCMBuffer(pcmFormat: pcmFormat, frameCapacity: AVAudioFrameCount(frameCount))!
+        buffer.frameLength = AVAudioFrameCount(frameCount)
+
+        let abl = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
+        var audioBuffer = abl[0]
+        let byteCount = frameCount * bytesPerFrame
+
+        // Zero the whole buffer, then copy only what we have
+        memset(audioBuffer.mData, 0, Int(audioBuffer.mDataByteSize))
+        data.withUnsafeBytes { raw in
+            _ = memcpy(audioBuffer.mData, raw.baseAddress!, byteCount)
+        }
+        audioBuffer.mDataByteSize = UInt32(byteCount)
+        abl[0] = audioBuffer
 
         return buffer
+    }
+
+    private func enqueueAlignedData(_ data: Data) {
+        // Convert raw bytes to AVAudioPCMBuffer
+        guard let buffer = createBuffer(from: data) else {
+            print("[Hibiki] ❌ Failed to create audio buffer")
+            return
+        }
+
+        if !hasStartedPlayback {
+            pendingBuffers.append(buffer)
+            bufferedSampleCount += Int(buffer.frameLength)
+            print("[Hibiki] 🎵 Buffered samples: \(bufferedSampleCount)/\(minimumBufferSize)")
+
+            // Start playback once we have enough buffered
+            if bufferedSampleCount >= minimumBufferSize {
+                print("[Hibiki] 🎵 Starting playback...")
+                startPlayback()
+            }
+        } else {
+            // Schedule buffer immediately if already playing
+            scheduleBuffer(buffer)
+        }
     }
 
     private func startPlayback() {
@@ -133,6 +164,15 @@ final class StreamingAudioPlayer {
                 try audioEngine.start()
                 isEngineRunning = true
                 print("[Hibiki] ✅ Audio engine started")
+            }
+
+            // Reset player node to clear any stale state
+            playerNode.reset()
+
+            // Schedule a short silent pre-roll buffer to absorb startup noise
+            if let silentBuffer = createSilentBuffer(durationMs: 50) {
+                playerNode.scheduleBuffer(silentBuffer, completionHandler: nil)
+                print("[Hibiki] 🎵 Scheduled silent pre-roll buffer")
             }
 
             // Schedule all pending buffers
@@ -148,6 +188,30 @@ final class StreamingAudioPlayer {
         } catch {
             print("[Hibiki] ❌ Failed to start audio engine: \(error)")
         }
+    }
+
+    /// Creates a silent buffer for pre-roll to absorb engine startup noise
+    private func createSilentBuffer(durationMs: Int) -> AVAudioPCMBuffer? {
+        let sampleRate = pcmFormat.sampleRate
+        let frameCount = UInt32(Double(durationMs) / 1000.0 * sampleRate)
+
+        guard let buffer = AVAudioPCMBuffer(
+            pcmFormat: pcmFormat,
+            frameCapacity: frameCount
+        ) else { return nil }
+
+        buffer.frameLength = frameCount
+
+        // Zero out the buffer (silence)
+        let abl = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
+        for index in 0..<abl.count {
+            let audioBuffer = abl[index]
+            if let mData = audioBuffer.mData {
+                memset(mData, 0, Int(audioBuffer.mDataByteSize))
+            }
+        }
+
+        return buffer
     }
 
     private func scheduleBuffer(_ buffer: AVAudioPCMBuffer) {
@@ -168,6 +232,19 @@ final class StreamingAudioPlayer {
     func markStreamComplete() {
         bufferQueue.async { [weak self] in
             guard let self = self, !self.isStopping else { return }
+            if !self.pendingPCMBytes.isEmpty {
+                let bytesPerFrame = Int(self.pcmFormat.streamDescription.pointee.mBytesPerFrame)
+                if self.pendingPCMBytes.count % bytesPerFrame != 0 {
+                    self.pendingPCMBytes.append(0)
+                }
+                let aligned = self.pendingPCMBytes
+                self.pendingPCMBytes.removeAll()
+                self.enqueueAlignedData(aligned)
+            }
+            if !self.hasStartedPlayback && !self.pendingBuffers.isEmpty {
+                print("[Hibiki] 🎵 Stream complete, starting playback with remaining buffers")
+                self.startPlayback()
+            }
             self.isStreamFinished = true
             self.checkPlaybackComplete()
         }
@@ -200,6 +277,7 @@ final class StreamingAudioPlayer {
             
             // Clear state
             self.pendingBuffers.removeAll()
+            self.pendingPCMBytes.removeAll()
             self.bufferedSampleCount = 0
             self.hasStartedPlayback = false
             self.scheduledBufferCount = 0

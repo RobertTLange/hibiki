@@ -28,10 +28,51 @@ final class AppState: ObservableObject {
     // Translation settings
     @AppStorage("targetLanguage") var targetLanguage: String = TargetLanguage.none.rawValue
     @AppStorage("translationModel") var translationModelSetting: String = LLMModel.gpt5Nano.rawValue
-    @AppStorage("translationPrompt") var translationPrompt: String = """
-        Translate the following text to {language}. Preserve the meaning, tone, and style. \
-        Output only the translation without any explanations or notes.
-        """
+    
+    // Per-language translation prompts (stored separately for each language)
+    @AppStorage("translationPrompt_en") var translationPromptEnglish: String = TargetLanguage.english.defaultPrompt
+    @AppStorage("translationPrompt_fr") var translationPromptFrench: String = TargetLanguage.french.defaultPrompt
+    @AppStorage("translationPrompt_de") var translationPromptGerman: String = TargetLanguage.german.defaultPrompt
+    @AppStorage("translationPrompt_ja") var translationPromptJapanese: String = TargetLanguage.japanese.defaultPrompt
+    @AppStorage("translationPrompt_es") var translationPromptSpanish: String = TargetLanguage.spanish.defaultPrompt
+
+    /// Get the translation prompt for the currently selected language
+    var currentTranslationPrompt: String {
+        get {
+            guard let language = TargetLanguage(rawValue: targetLanguage) else { return "" }
+            switch language {
+            case .none: return ""
+            case .english: return translationPromptEnglish
+            case .french: return translationPromptFrench
+            case .german: return translationPromptGerman
+            case .japanese: return translationPromptJapanese
+            case .spanish: return translationPromptSpanish
+            }
+        }
+        set {
+            guard let language = TargetLanguage(rawValue: targetLanguage) else { return }
+            switch language {
+            case .none: break
+            case .english: translationPromptEnglish = newValue
+            case .french: translationPromptFrench = newValue
+            case .german: translationPromptGerman = newValue
+            case .japanese: translationPromptJapanese = newValue
+            case .spanish: translationPromptSpanish = newValue
+            }
+        }
+    }
+
+    /// Get translation prompt for a specific language
+    func translationPrompt(for language: TargetLanguage) -> String {
+        switch language {
+        case .none: return ""
+        case .english: return translationPromptEnglish
+        case .french: return translationPromptFrench
+        case .german: return translationPromptGerman
+        case .japanese: return translationPromptJapanese
+        case .spanish: return translationPromptSpanish
+        }
+    }
 
     // Audio level monitor for waveform visualization
     let audioLevelMonitor = AudioLevelMonitor()
@@ -454,7 +495,7 @@ final class AppState: ObservableObject {
                     text: text,
                     targetLanguage: language,
                     model: translationModel,
-                    systemPrompt: translationPrompt,
+                    systemPrompt: translationPrompt(for: language),
                     apiKey: effectiveApiKey,
                     onChunk: { [weak self] chunk in
                         guard let self = self else { return }
@@ -634,7 +675,7 @@ final class AppState: ObservableObject {
                     text: llmResult.summarizedText,
                     targetLanguage: language,
                     model: translationModel,
-                    systemPrompt: translationPrompt,
+                    systemPrompt: translationPrompt(for: language),
                     apiKey: effectiveApiKey,
                     onChunk: { [weak self] chunk in
                         guard let self = self else { return }
