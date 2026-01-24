@@ -10,6 +10,7 @@ struct StatisticsTab: View {
     @State private var allTimeSummary: PeriodSummary = .zero
     @State private var isLoading = true
     @State private var isVisible = false  // Track visibility to control chart rendering
+    @State private var chartsReady = false  // Only true after data is validated and delay passed
     @State private var cancellables = Set<AnyCancellable>()
 
     var body: some View {
@@ -34,8 +35,8 @@ struct StatisticsTab: View {
                     )
                 }
 
-                // Only render charts when view is visible to prevent freeze on tab switch
-                if isVisible {
+                // Only render charts when data is ready and validated to prevent Charts framework crash
+                if chartsReady {
                     // Cost Over Time Chart - Multi-line with Total, TTS, and LLM
                     GroupBox("Cost Over Time") {
                         if isLoading {
@@ -172,10 +173,19 @@ struct StatisticsTab: View {
             .padding()
         }
         .onAppear {
+            // Reload statistics (will update charts since not visible yet)
             loadStatisticsSync()
             // Delay setting visible to allow tab animation to complete
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 isVisible = true
+            }
+            // Longer delay before rendering charts to avoid Charts framework crash
+            // The Charts framework can crash during initial rendering if data arrives too quickly
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                // Only enable charts if data is valid
+                if validateChartData() {
+                    chartsReady = true
+                }
             }
             // Subscribe to history changes
             HistoryManager.shared.entriesDidChange
@@ -185,14 +195,50 @@ struct StatisticsTab: View {
                 }
                 .store(in: &cancellables)
         }
+        .onChange(of: isVisible) { _, newValue in
+            // Reload chart data when becoming visible to catch any missed updates
+            if newValue {
+                // Disable charts while updating data
+                chartsReady = false
+
+                let historyManager = HistoryManager.shared
+                let entriesSnapshot = historyManager.entries
+                let audioDir = historyManager.audioDirectory
+                let calculator = UsageStatisticsCalculator(entries: entriesSnapshot, audioDirectory: audioDir)
+                self.dailyUsage = calculator.dailyUsage(days: 30)
+                self.costDataPoints = buildCostDataPoints(from: dailyUsage)
+
+                // Re-enable charts after a delay
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    if validateChartData() {
+                        chartsReady = true
+                    }
+                }
+            }
+        }
         .onDisappear {
             // Hide charts immediately when leaving to prevent freeze
+            chartsReady = false
             isVisible = false
         }
     }
     
     /// Reload statistics when history changes
     private func reloadStatistics() {
+        // Don't update chart data while charts are rendering to avoid Charts framework crash
+        // The chart will be updated when the tab becomes visible again
+        guard !chartsReady else {
+            // Just update the summary cards which don't cause crashes
+            let historyManager = HistoryManager.shared
+            let entriesSnapshot = historyManager.entries
+            let audioDir = historyManager.audioDirectory
+            let calculator = UsageStatisticsCalculator(entries: entriesSnapshot, audioDirectory: audioDir)
+            self.todaySummary = calculator.calculateTodaySummary()
+            self.monthSummary = calculator.calculateThisMonthSummary()
+            self.allTimeSummary = calculator.calculateAllTimeSummary()
+            return
+        }
+
         let historyManager = HistoryManager.shared
         let entriesSnapshot = historyManager.entries
         let audioDir = historyManager.audioDirectory
@@ -204,6 +250,31 @@ struct StatisticsTab: View {
         self.todaySummary = calculator.calculateTodaySummary()
         self.monthSummary = calculator.calculateThisMonthSummary()
         self.allTimeSummary = calculator.calculateAllTimeSummary()
+    }
+
+    /// Validate chart data to ensure it won't crash the Charts framework
+    private func validateChartData() -> Bool {
+        // Check for empty data (charts handle this, but be safe)
+        guard !dailyUsage.isEmpty else { return true }
+
+        // Check for NaN or infinity values in cost data
+        for point in costDataPoints {
+            if point.cost.isNaN || point.cost.isInfinite {
+                print("[Hibiki] ⚠️ Invalid cost data point detected, skipping charts")
+                return false
+            }
+        }
+
+        // Check for NaN or infinity in daily usage
+        for day in dailyUsage {
+            if day.cost.isNaN || day.cost.isInfinite ||
+               day.audioMinutes.isNaN || day.audioMinutes.isInfinite {
+                print("[Hibiki] ⚠️ Invalid daily usage data detected, skipping charts")
+                return false
+            }
+        }
+
+        return true
     }
     
     /// Convert daily usage to cost data points for multi-line chart

@@ -13,6 +13,11 @@ final class AppState: ObservableObject {
     @Published var streamingSummary: String = ""  // Accumulates streaming summary text
     @Published var streamingTranslation: String = ""  // Accumulates streaming translation text
 
+    // Text highlighting during playback
+    @Published var playbackProgress: Double = 0.0
+    @Published var highlightCharacterIndex: Int = 0
+    @Published var displayText: String = ""  // Text being spoken (raw/summarized/translated)
+
     @AppStorage("selectedVoice") var selectedVoice: String = TTSVoice.coral.rawValue
     @AppStorage("openaiAPIKey") var apiKey: String = ""
     @AppStorage("playbackSpeed") var playbackSpeed: Double = 1.0
@@ -85,6 +90,8 @@ final class AppState: ObservableObject {
     private var translationTask: Task<Void, Never>?
 
     private let logger = DebugLogger.shared
+    private var progressTimer: Timer?
+    private var lastHighlightIndex: Int = 0  // For smoothing highlight movement
 
     // Track state for history save on stop
     private var accumulatedAudioData = Data()
@@ -206,9 +213,14 @@ final class AppState: ObservableObject {
             pendingHistorySave = nil
             historySaved = false
 
-            // Reset audio player for fresh playback
+            // Set display text for highlighting (raw text for direct TTS)
+            displayText = text
+
+            // Reset audio player for fresh playback (must be before setEstimatedDuration)
             audioPlayer.reset()
             audioPlayer.playbackSpeed = Float(playbackSpeed)
+            audioPlayer.setEstimatedDuration(forTextLength: text.count)
+            startProgressTracking()
 
             // Get the voice enum from stored string
             let voice = TTSVoice(rawValue: selectedVoice) ?? .coral
@@ -362,8 +374,14 @@ final class AppState: ObservableObject {
             pendingHistorySave = nil
             historySaved = false
 
+            // Set display text for highlighting (summarized text)
+            displayText = llmResult.summarizedText
+
+            // Reset audio player for fresh playback (must be before setEstimatedDuration)
             audioPlayer.reset()
             audioPlayer.playbackSpeed = Float(playbackSpeed)
+            audioPlayer.setEstimatedDuration(forTextLength: llmResult.summarizedText.count)
+            startProgressTracking()
 
             let voice = TTSVoice(rawValue: selectedVoice) ?? .coral
             logger.info("Using voice: \(voice.rawValue)", source: "AppState")
@@ -519,8 +537,14 @@ final class AppState: ObservableObject {
             pendingHistorySave = nil
             historySaved = false
 
+            // Set display text for highlighting (translated text or original if no translation)
+            displayText = textForTTS
+
+            // Reset audio player for fresh playback (must be before setEstimatedDuration)
             audioPlayer.reset()
             audioPlayer.playbackSpeed = Float(playbackSpeed)
+            audioPlayer.setEstimatedDuration(forTextLength: textForTTS.count)
+            startProgressTracking()
 
             let voice = TTSVoice(rawValue: selectedVoice) ?? .coral
             logger.info("Using voice: \(voice.rawValue)", source: "AppState")
@@ -699,8 +723,14 @@ final class AppState: ObservableObject {
             pendingHistorySave = nil
             historySaved = false
 
+            // Set display text for highlighting (translated summary or just summary)
+            displayText = textForTTS
+
+            // Reset audio player for fresh playback (must be before setEstimatedDuration)
             audioPlayer.reset()
             audioPlayer.playbackSpeed = Float(playbackSpeed)
+            audioPlayer.setEstimatedDuration(forTextLength: textForTTS.count)
+            startProgressTracking()
 
             let voice = TTSVoice(rawValue: selectedVoice) ?? .coral
             logger.info("Using voice: \(voice.rawValue)", source: "AppState")
@@ -780,6 +810,52 @@ final class AppState: ObservableObject {
         logger.debug("Playback speed updated to \(speed)x", source: "AppState")
     }
 
+    /// Start tracking playback progress for text highlighting
+    private func startProgressTracking() {
+        progressTimer?.invalidate()
+        progressTimer = Timer.scheduledTimer(withTimeInterval: 0.033, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.updatePlaybackProgress()
+            }
+        }
+    }
+
+    /// Stop tracking playback progress
+    private func stopProgressTracking() {
+        progressTimer?.invalidate()
+        progressTimer = nil
+        playbackProgress = 0.0
+        highlightCharacterIndex = 0
+        lastHighlightIndex = 0
+    }
+
+    /// Update playback progress and highlight position with smoothing
+    @MainActor
+    private func updatePlaybackProgress() {
+        guard isPlaying, !displayText.isEmpty else { return }
+
+        let rawProgress = audioPlayer.currentPlaybackProgress
+        playbackProgress = rawProgress
+
+        let targetIndex = Int(Double(displayText.count) * rawProgress)
+
+        // Smoothing: only move forward, and limit step size for smooth animation
+        // Allow backward movement only if it's a significant correction (>5% of text)
+        let significantBackward = lastHighlightIndex - targetIndex > displayText.count / 20
+
+        if targetIndex >= lastHighlightIndex {
+            // Moving forward - smooth by limiting step size
+            let maxStep = max(1, displayText.count / 100)  // ~1% of text per update
+            highlightCharacterIndex = min(targetIndex, lastHighlightIndex + maxStep)
+            lastHighlightIndex = highlightCharacterIndex
+        } else if significantBackward {
+            // Significant backward correction needed - allow it
+            highlightCharacterIndex = targetIndex
+            lastHighlightIndex = targetIndex
+        }
+        // Otherwise ignore small backward movements (jitter)
+    }
+
     func stopPlayback() {
         logger.info("Stopping playback", source: "AppState")
 
@@ -789,6 +865,9 @@ final class AppState: ObservableObject {
         translationTask?.cancel()
         translationTask = nil
         llmService.cancel()
+
+        // Stop progress tracking
+        stopProgressTracking()
 
         // Stop audio and TTS
         audioPlayer.stop()
@@ -823,6 +902,7 @@ final class AppState: ObservableObject {
         currentText = nil
         streamingSummary = ""
         streamingTranslation = ""
+        displayText = ""
         accumulatedAudioData = Data()
         pendingHistorySave = nil
     }
@@ -854,12 +934,14 @@ final class AppState: ObservableObject {
             historySaved = true
         }
 
-        // Stop monitoring and clear state
+        // Stop progress tracking and monitoring
+        stopProgressTracking()
         audioLevelMonitor.stopMonitoring()
         isPlaying = false
         currentText = nil
         streamingSummary = ""
         streamingTranslation = ""
+        displayText = ""
         accumulatedAudioData = Data()
         pendingHistorySave = nil
     }
