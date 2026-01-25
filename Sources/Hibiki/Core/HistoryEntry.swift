@@ -151,6 +151,26 @@ struct HistoryEntry: Identifiable, Codable, Sendable {
     var wordCount: Int {
         text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count
     }
+
+    /// Calculate audio duration in seconds from file size
+    /// Audio format: 24kHz, 16-bit mono = 48000 bytes/second
+    func audioDuration(fileSize: Int64) -> TimeInterval {
+        return Double(fileSize) / 48000.0
+    }
+
+    /// Format duration as mm:ss or h:mm:ss
+    static func formatDuration(_ duration: TimeInterval) -> String {
+        let totalSeconds = Int(duration)
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let seconds = totalSeconds % 60
+
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            return String(format: "%d:%02d", minutes, seconds)
+        }
+    }
 }
 
 enum TTSPricing {

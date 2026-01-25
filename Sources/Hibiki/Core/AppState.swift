@@ -1,6 +1,27 @@
 import SwiftUI
 import KeyboardShortcuts
 
+/// Position options for the audio player panel
+enum PanelPosition: String, CaseIterable, Identifiable {
+    case topRight = "topRight"
+    case topLeft = "topLeft"
+    case bottomRight = "bottomRight"
+    case bottomLeft = "bottomLeft"
+    case belowMenuBar = "belowMenuBar"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .topRight: return "Top Right"
+        case .topLeft: return "Top Left"
+        case .bottomRight: return "Bottom Right"
+        case .bottomLeft: return "Bottom Left"
+        case .belowMenuBar: return "Below Menu Bar"
+        }
+    }
+}
+
 final class AppState: ObservableObject {
     static let shared = AppState()
 
@@ -21,6 +42,10 @@ final class AppState: ObservableObject {
     @AppStorage("selectedVoice") var selectedVoice: String = TTSVoice.coral.rawValue
     @AppStorage("openaiAPIKey") var apiKey: String = ""
     @AppStorage("playbackSpeed") var playbackSpeed: Double = 1.0
+
+    // Panel position and collapse settings
+    @AppStorage("panelPosition") var panelPosition: String = PanelPosition.topRight.rawValue
+    @Published var isPanelCollapsed: Bool = false
 
     // Summarization settings
     @AppStorage("summarizationModel") var summarizationModel: String = LLMModel.gpt5Nano.rawValue

@@ -23,6 +23,24 @@ struct ConfigurationTab: View {
         )
     }
 
+    /// Description for the currently selected voice
+    private var voiceDescription: String {
+        switch appState.selectedVoice {
+        case "alloy": return "Balanced, versatile, and neutral."
+        case "ash": return "Warm, friendly, and engaging."
+        case "ballad": return "Expressive and gentle."
+        case "coral": return "Clear and pleasant."
+        case "echo": return "Authoritative and deep."
+        case "fable": return "Storyteller-like, with a distinct British or dramatic accent."
+        case "nova": return "Bright, energetic, and youthful."
+        case "onyx": return "Smooth, dark, and confident."
+        case "sage": return "Wise, soft, and calm."
+        case "shimmer": return "Melodic, light, and engaging."
+        case "verse": return "Articulate and professional."
+        default: return ""
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -111,7 +129,7 @@ struct ConfigurationTab: View {
                 }
                 .fixedSize(horizontal: false, vertical: true)
 
-                // Row 2: Voice + Playback Speed
+                // Row 2: Voice + Playback Speed + Panel Position
                 HStack(alignment: .top, spacing: 16) {
                     // Voice Section
                     GroupBox("Voice") {
@@ -127,6 +145,11 @@ struct ConfigurationTab: View {
                             Text("Choose the voice for text-to-speech.")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
+
+                            Text(voiceDescription)
+                                .font(.caption)
+                                .foregroundColor(.primary.opacity(0.7))
+                                .italic()
 
                             Spacer(minLength: 0)
                         }
@@ -164,6 +187,32 @@ struct ConfigurationTab: View {
                             }
 
                             Text("Adjustable during playback.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.vertical, 4)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    // Panel Position Section
+                    GroupBox("Panel Position") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Picker("Position:", selection: $appState.panelPosition) {
+                                ForEach(PanelPosition.allCases) { position in
+                                    Text(position.displayName).tag(position.rawValue)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                            Text("Initial position of the audio player panel.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+
+                            Text("Use the collapse button (▲) to minimize.")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
 

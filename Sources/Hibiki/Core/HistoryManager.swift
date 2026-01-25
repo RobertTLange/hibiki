@@ -127,6 +127,12 @@ final class HistoryManager {
         return size
     }
 
+    /// Get audio duration for a history entry
+    func audioDuration(for entry: HistoryEntry) -> TimeInterval? {
+        guard let size = audioFileSize(for: entry) else { return nil }
+        return entry.audioDuration(fileSize: size)
+    }
+
     // MARK: - Private Methods
 
     private func ensureDirectoriesExist() {
