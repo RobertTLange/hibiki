@@ -12,6 +12,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var playingObserver: AnyCancellable?
     private var summarizingObserver: AnyCancellable?
     private var translatingObserver: AnyCancellable?
+    private var collapsedObserver: AnyCancellable?
     private var keyboardMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -69,7 +70,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     self?.hideAudioPlayerPanel()
                 }
             }
-        
+
+        // Observe collapsed state to resize panel
+        collapsedObserver = AppState.shared.$isPanelCollapsed
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.updatePanelForCollapsedState()
+            }
+
         // Auto-open settings window on launch (useful for development)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             self?.openSettings()
@@ -245,20 +253,61 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func positionPanelBelowMenuBar() {
-        guard let panel = audioPlayerPanel,
-              let button = statusItem.button,
-              let buttonWindow = button.window else { return }
+        guard let panel = audioPlayerPanel else { return }
 
-        // Get the button's frame in screen coordinates
-        let buttonFrameInWindow = button.convert(button.bounds, to: nil)
-        let buttonFrameOnScreen = buttonWindow.convertToScreen(buttonFrameInWindow)
-
-        // Position panel below the button, centered
+        let position = PanelPosition(rawValue: AppState.shared.panelPosition) ?? .topRight
         let panelWidth = panel.frame.width
-        let x = buttonFrameOnScreen.midX - panelWidth / 2
-        let y = buttonFrameOnScreen.minY - panel.frame.height - 4
+        let panelHeight = panel.frame.height
+
+        // Get the main screen
+        guard let screen = NSScreen.main else { return }
+        let screenFrame = screen.visibleFrame
+
+        var x: CGFloat
+        var y: CGFloat
+
+        switch position {
+        case .topRight:
+            x = screenFrame.maxX - panelWidth - 20
+            y = screenFrame.maxY - panelHeight - 20
+        case .topLeft:
+            x = screenFrame.minX + 20
+            y = screenFrame.maxY - panelHeight - 20
+        case .bottomRight:
+            x = screenFrame.maxX - panelWidth - 20
+            y = screenFrame.minY + 20
+        case .bottomLeft:
+            x = screenFrame.minX + 20
+            y = screenFrame.minY + 20
+        case .belowMenuBar:
+            // Position below the status bar button
+            if let button = statusItem.button,
+               let buttonWindow = button.window {
+                let buttonFrameInWindow = button.convert(button.bounds, to: nil)
+                let buttonFrameOnScreen = buttonWindow.convertToScreen(buttonFrameInWindow)
+                x = buttonFrameOnScreen.midX - panelWidth / 2
+                y = buttonFrameOnScreen.minY - panelHeight - 4
+            } else {
+                // Fallback to top right if button not available
+                x = screenFrame.maxX - panelWidth - 20
+                y = screenFrame.maxY - panelHeight - 20
+            }
+        }
 
         panel.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    private func updatePanelForCollapsedState() {
+        guard let panel = audioPlayerPanel else { return }
+
+        // Force the panel to recalculate its size based on the SwiftUI content
+        if let hostingView = panel.contentView as? NSHostingView<AnyView> {
+            hostingView.needsLayout = true
+            hostingView.layoutSubtreeIfNeeded()
+        }
+
+        // Reposition the panel after size change
+        positionPanelBelowMenuBar()
     }
 
     private func installKeyboardMonitor() {

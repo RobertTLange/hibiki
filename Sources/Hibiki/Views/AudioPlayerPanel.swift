@@ -5,13 +5,99 @@ struct AudioPlayerPanel: View {
     @ObservedObject var audioLevelMonitor: AudioLevelMonitor
 
     var body: some View {
+        if appState.isPanelCollapsed {
+            collapsedView
+        } else {
+            expandedView
+        }
+    }
+
+    // MARK: - Collapsed View
+
+    private var collapsedView: some View {
+        HStack(spacing: 8) {
+            // Small waveform indicator
+            WaveformView(level: audioLevelMonitor.currentLevel, barCount: 8)
+                .frame(width: 40, height: 20)
+
+            // Status indicator
+            if appState.isSummarizing {
+                ProgressView()
+                    .scaleEffect(0.5)
+                    .frame(width: 12, height: 12)
+                Text("Summarizing...")
+                    .font(.system(size: 11))
+                    .lineLimit(1)
+            } else if appState.isTranslating {
+                ProgressView()
+                    .scaleEffect(0.5)
+                    .frame(width: 12, height: 12)
+                Text("Translating...")
+                    .font(.system(size: 11))
+                    .lineLimit(1)
+            } else {
+                Image(systemName: "speaker.wave.2.fill")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                Text("Playing...")
+                    .font(.system(size: 11))
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            // Expand button
+            Button(action: { appState.isPanelCollapsed = false }) {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(.secondary)
+
+            // Stop button
+            Button(action: { appState.stopPlayback() }) {
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 10))
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(.primary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(width: 200)
+        .background(
+            VisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
+        )
+        .cornerRadius(8)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.primary.opacity(0.1), lineWidth: 1)
+        )
+    }
+
+    // MARK: - Expanded View
+
+    private var expandedView: some View {
         VStack(spacing: 8) {
+            // Header with collapse button
+            HStack {
+                Spacer()
+                Button(action: { appState.isPanelCollapsed = true }) {
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Collapse panel")
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+
             // Waveform visualization (always shown)
             WaveformView(level: audioLevelMonitor.currentLevel, barCount: 50)
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 16)
-                .padding(.top, 8)
-            
+
             // Text display with highlighting
             // Priority:
             // 1. During active translation (LLM streaming): show streaming translation

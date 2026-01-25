@@ -3,8 +3,11 @@ import SwiftUI
 struct HistoryTableView: View {
     let entries: [HistoryEntry]
     @Binding var playingEntryId: UUID?
+    @Binding var playbackProgress: Double
+    let audioDurations: [UUID: TimeInterval]
     let onReplay: (HistoryEntry) -> Void
     let onDelete: (HistoryEntry) -> Void
+    let onSeek: (HistoryEntry, Double) -> Void
 
     var body: some View {
         Table(entries) {
@@ -16,26 +19,35 @@ struct HistoryTableView: View {
             .width(min: 120, ideal: 140)
 
             TableColumn("Type") { entry in
-                HStack(spacing: 2) {
-                    if entry.wasSummarized {
-                        Image(systemName: "sparkles")
-                            .foregroundColor(.purple)
-                            .font(.caption2)
+                HStack(spacing: 4) {
+                    // Type icons
+                    HStack(spacing: 2) {
+                        if entry.wasSummarized {
+                            Image(systemName: "sparkles")
+                                .foregroundColor(.purple)
+                                .font(.caption2)
+                        }
+                        if entry.wasTranslated {
+                            Image(systemName: "globe")
+                                .foregroundColor(Color(red: 0.3, green: 0.55, blue: 0.85))
+                                .font(.caption2)
+                        }
+                        if !entry.wasSummarized && !entry.wasTranslated {
+                            Image(systemName: "speaker.wave.2")
+                                .foregroundColor(.secondary)
+                                .font(.caption2)
+                        }
                     }
-                    if entry.wasTranslated {
-                        Image(systemName: "globe")
-                            .foregroundColor(Color(red: 0.3, green: 0.55, blue: 0.85))
-                            .font(.caption2)
-                    }
-                    if !entry.wasSummarized && !entry.wasTranslated {
-                        Image(systemName: "speaker.wave.2")
+                    // Duration
+                    if let duration = audioDurations[entry.id] {
+                        Text(HistoryEntry.formatDuration(duration))
+                            .font(.system(.caption2, design: .monospaced))
                             .foregroundColor(.secondary)
-                            .font(.caption2)
                     }
                 }
                 .help(typeHelp(for: entry))
             }
-            .width(50)
+            .width(min: 70, ideal: 85)
 
             TableColumn("Original Text") { entry in
                 HoverableTextCell(
@@ -107,27 +119,44 @@ struct HistoryTableView: View {
             .width(65)
 
             TableColumn("Actions") { entry in
-                HStack(spacing: 8) {
+                let isPlaying = playingEntryId == entry.id
+                let duration = audioDurations[entry.id] ?? 0
+
+                HStack(spacing: 6) {
                     Button {
                         onReplay(entry)
                     } label: {
-                        Image(systemName: playingEntryId == entry.id ? "stop.fill" : "play.fill")
-                            .foregroundColor(playingEntryId == entry.id ? .red : .accentColor)
+                        Image(systemName: isPlaying ? "stop.fill" : "play.fill")
+                            .foregroundColor(isPlaying ? .red : .accentColor)
+                            .font(.system(size: 10))
                     }
                     .buttonStyle(.borderless)
-                    .help(playingEntryId == entry.id ? "Stop" : "Replay")
+                    .help(isPlaying ? "Stop" : "Replay")
+
+                    if isPlaying && duration > 0 {
+                        // Show progress bar with seek functionality
+                        PlaybackProgressView(
+                            progress: playbackProgress,
+                            duration: duration,
+                            onSeek: { progress in
+                                onSeek(entry, progress)
+                            }
+                        )
+                        .frame(width: 80)
+                    }
 
                     Button {
                         onDelete(entry)
                     } label: {
                         Image(systemName: "trash")
                             .foregroundColor(.secondary)
+                            .font(.system(size: 10))
                     }
                     .buttonStyle(.borderless)
                     .help("Delete")
                 }
             }
-            .width(60)
+            .width(min: 80, ideal: 140)
         }
         .tableStyle(.inset(alternatesRowBackgrounds: true))
     }
@@ -157,6 +186,83 @@ struct HistoryTableView: View {
             return "Direct text-to-speech"
         }
         return parts.joined(separator: " + ") + " before TTS"
+    }
+}
+
+/// A progress bar for audio playback with seek functionality
+struct PlaybackProgressView: View {
+    let progress: Double
+    let duration: TimeInterval
+    let onSeek: (Double) -> Void
+
+    @State private var isHovering = false
+    @State private var hoverProgress: Double = 0
+
+    var body: some View {
+        VStack(spacing: 2) {
+            // Progress bar with seek functionality
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    // Background track
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.secondary.opacity(0.2))
+
+                    // Progress fill
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.accentColor)
+                        .frame(width: geometry.size.width * CGFloat(progress))
+
+                    // Hover indicator
+                    if isHovering {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Color.accentColor.opacity(0.4))
+                            .frame(width: geometry.size.width * CGFloat(hoverProgress))
+                    }
+                }
+                .frame(height: 6)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            let newProgress = min(1.0, max(0.0, value.location.x / geometry.size.width))
+                            hoverProgress = newProgress
+                        }
+                        .onEnded { value in
+                            let seekProgress = min(1.0, max(0.0, value.location.x / geometry.size.width))
+                            onSeek(seekProgress)
+                        }
+                )
+                .onHover { hovering in
+                    isHovering = hovering
+                    if !hovering {
+                        hoverProgress = 0
+                    }
+                }
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let location):
+                        hoverProgress = min(1.0, max(0.0, location.x / geometry.size.width))
+                    case .ended:
+                        hoverProgress = 0
+                    }
+                }
+            }
+            .frame(height: 6)
+
+            // Time display
+            HStack(spacing: 0) {
+                Text(HistoryEntry.formatDuration(duration * progress))
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundColor(.secondary)
+                Text(" / ")
+                    .font(.system(size: 8))
+                    .foregroundColor(.secondary.opacity(0.6))
+                Text(HistoryEntry.formatDuration(duration))
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundColor(.secondary)
+            }
+        }
+        .help("Click or drag to seek")
     }
 }
 
