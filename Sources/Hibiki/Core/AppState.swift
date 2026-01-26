@@ -34,6 +34,15 @@ final class AppState: ObservableObject {
     @Published var streamingSummary: String = ""  // Accumulates streaming summary text
     @Published var streamingTranslation: String = ""  // Accumulates streaming translation text
 
+    /// Timestamp of when a hotkey was last triggered (used to prevent Option-only stop during cooldown)
+    /// Thread-safe access via lock since it's read from keyboard monitor (non-main thread)
+    private let hotkeyTimeLock = NSLock()
+    private var _lastHotkeyTriggerTime: Date?
+    var lastHotkeyTriggerTime: Date? {
+        get { hotkeyTimeLock.lock(); defer { hotkeyTimeLock.unlock() }; return _lastHotkeyTriggerTime }
+        set { hotkeyTimeLock.lock(); defer { hotkeyTimeLock.unlock() }; _lastHotkeyTriggerTime = newValue }
+    }
+
     // Text highlighting during playback
     @Published var playbackProgress: Double = 0.0
     @Published var highlightCharacterIndex: Int = 0
@@ -113,12 +122,14 @@ final class AppState: ObservableObject {
     private let accessibilityManager = AccessibilityManager.shared
     private var summarizationTask: Task<Void, Never>?
     private var translationTask: Task<Void, Never>?
+    private let interleavedPipeline = InterleavedPipeline()
 
     private let logger = DebugLogger.shared
     private var progressTimer: Timer?
     private var lastHighlightIndex: Int = 0  // For smoothing highlight movement
 
     // Track state for history save on stop
+    private let audioDataLock = NSLock()
     private var accumulatedAudioData = Data()
     private var pendingHistorySave: (
         text: String,
@@ -150,6 +161,7 @@ final class AppState: ObservableObject {
         logger.debug("Setting up hotkey handler for .triggerTTS", source: "AppState")
         KeyboardShortcuts.onKeyDown(for: .triggerTTS) { [weak self] in
             self?.logger.info("Hotkey pressed!", source: "AppState")
+            self?.lastHotkeyTriggerTime = Date()
             Task { @MainActor in
                 await self?.handleHotkeyPressed()
             }
@@ -158,6 +170,7 @@ final class AppState: ObservableObject {
         logger.debug("Setting up hotkey handler for .triggerSummarizeTTS", source: "AppState")
         KeyboardShortcuts.onKeyDown(for: .triggerSummarizeTTS) { [weak self] in
             self?.logger.info("Summarize+TTS hotkey pressed!", source: "AppState")
+            self?.lastHotkeyTriggerTime = Date()
             self?.summarizationTask?.cancel()
             self?.summarizationTask = Task { @MainActor in
                 await self?.handleSummarizeTTSPressed()
@@ -167,6 +180,7 @@ final class AppState: ObservableObject {
         logger.debug("Setting up hotkey handler for .triggerTranslateTTS", source: "AppState")
         KeyboardShortcuts.onKeyDown(for: .triggerTranslateTTS) { [weak self] in
             self?.logger.info("Translate+TTS hotkey pressed!", source: "AppState")
+            self?.lastHotkeyTriggerTime = Date()
             self?.translationTask?.cancel()
             self?.translationTask = Task { @MainActor in
                 await self?.handleTranslateTTSPressed()
@@ -176,6 +190,7 @@ final class AppState: ObservableObject {
         logger.debug("Setting up hotkey handler for .triggerSummarizeTranslateTTS", source: "AppState")
         KeyboardShortcuts.onKeyDown(for: .triggerSummarizeTranslateTTS) { [weak self] in
             self?.logger.info("Summarize+Translate+TTS hotkey pressed!", source: "AppState")
+            self?.lastHotkeyTriggerTime = Date()
             self?.summarizationTask?.cancel()
             self?.translationTask?.cancel()
             self?.summarizationTask = Task { @MainActor in
@@ -234,7 +249,9 @@ final class AppState: ObservableObject {
             isLoading = false
 
             // Reset tracking state
+            audioDataLock.lock()
             accumulatedAudioData = Data()
+            audioDataLock.unlock()
             pendingHistorySave = nil
             historySaved = false
 
@@ -285,9 +302,11 @@ final class AppState: ObservableObject {
                 voice: voice,
                 apiKey: effectiveApiKey,
                 onAudioChunk: { [weak self] data in
-                    self?.logger.debug("Received audio chunk: \(data.count) bytes", source: "AppState")
-                    self?.audioPlayer.enqueue(pcmData: data)
-                    self?.accumulatedAudioData.append(data)
+                    guard let self = self else { return }
+                    self.audioPlayer.enqueue(pcmData: data)
+                    self.audioDataLock.lock()
+                    self.accumulatedAudioData.append(data)
+                    self.audioDataLock.unlock()
                 },
                 onComplete: { [weak self] result in
                     self?.logger.info("TTS stream complete, audio size: \(result.audioData.count) bytes, inputTokens: \(result.inputTokens)", source: "AppState")
@@ -395,7 +414,9 @@ final class AppState: ObservableObject {
             isLoading = false
 
             // Reset tracking state
+            audioDataLock.lock()
             accumulatedAudioData = Data()
+            audioDataLock.unlock()
             pendingHistorySave = nil
             historySaved = false
 
@@ -443,9 +464,11 @@ final class AppState: ObservableObject {
                 voice: voice,
                 apiKey: effectiveApiKey,
                 onAudioChunk: { [weak self] data in
-                    self?.logger.debug("Received audio chunk: \(data.count) bytes", source: "AppState")
-                    self?.audioPlayer.enqueue(pcmData: data)
-                    self?.accumulatedAudioData.append(data)
+                    guard let self = self else { return }
+                    self.audioPlayer.enqueue(pcmData: data)
+                    self.audioDataLock.lock()
+                    self.accumulatedAudioData.append(data)
+                    self.audioDataLock.unlock()
                 },
                 onComplete: { [weak self] result in
                     self?.logger.info("TTS stream complete, audio size: \(result.audioData.count) bytes, inputTokens: \(result.inputTokens)", source: "AppState")
@@ -558,7 +581,9 @@ final class AppState: ObservableObject {
             isLoading = false
 
             // Reset tracking state
+            audioDataLock.lock()
             accumulatedAudioData = Data()
+            audioDataLock.unlock()
             pendingHistorySave = nil
             historySaved = false
 
@@ -606,9 +631,11 @@ final class AppState: ObservableObject {
                 voice: voice,
                 apiKey: effectiveApiKey,
                 onAudioChunk: { [weak self] data in
-                    self?.logger.debug("Received audio chunk: \(data.count) bytes", source: "AppState")
-                    self?.audioPlayer.enqueue(pcmData: data)
-                    self?.accumulatedAudioData.append(data)
+                    guard let self = self else { return }
+                    self.audioPlayer.enqueue(pcmData: data)
+                    self.audioDataLock.lock()
+                    self.accumulatedAudioData.append(data)
+                    self.audioDataLock.unlock()
                 },
                 onComplete: { [weak self] result in
                     self?.logger.info("TTS stream complete, audio size: \(result.audioData.count) bytes, inputTokens: \(result.inputTokens)", source: "AppState")
@@ -653,8 +680,21 @@ final class AppState: ObservableObject {
 
         do {
             isLoading = true
-            isSummarizing = true
             errorMessage = nil
+
+            // Determine target language early so we can set the right UI state
+            let language = TargetLanguage(rawValue: targetLanguage) ?? .none
+
+            // Set UI state based on whether translation is enabled
+            // When translation is enabled, show the translation UI from the start
+            // to avoid showing the summary text (which should not be displayed)
+            if language != .none {
+                isTranslating = true
+                isSummarizing = false
+            } else {
+                isSummarizing = true
+                isTranslating = false
+            }
 
             // Get selected text
             logger.debug("Attempting to get selected text for summarize+translate...", source: "AppState")
@@ -666,6 +706,7 @@ final class AppState: ObservableObject {
                 errorMessage = "No text selected"
                 isLoading = false
                 isSummarizing = false
+                isTranslating = false
                 return
             }
 
@@ -683,99 +724,108 @@ final class AppState: ObservableObject {
                     errorMessage = "No API key configured. Enter key in Settings."
                     isLoading = false
                     isSummarizing = false
+                    isTranslating = false
                     return
                 }
             }
 
-            // Summarize text with streaming
             let model = LLMModel(rawValue: summarizationModel) ?? .gpt5Nano
-            logger.info("Summarizing with model: \(model.rawValue)", source: "AppState")
+            let translationModel = LLMModel(rawValue: translationModelSetting) ?? .gpt5Nano
+            let voice = TTSVoice(rawValue: selectedVoice) ?? .coral
 
+            logger.info("Using interleaved pipeline for summarize+translate+TTS", source: "AppState")
+
+            // Reset streaming state
             streamingSummary = ""
-
-            let llmResult = try await llmService.summarizeStreaming(
-                text: text,
-                model: model,
-                systemPrompt: summarizationPrompt,
-                apiKey: effectiveApiKey,
-                onChunk: { [weak self] chunk in
-                    guard let self = self else { return }
-                    self.logger.debug("LLM chunk received: \(chunk.count) chars", source: "AppState")
-                    self.streamingSummary += chunk
-                }
-            )
-
-            logger.info("Summarization complete: \(llmResult.summarizedText.count) chars", source: "AppState")
-            isSummarizing = false
-
-            // Now translate if target language is set
-            let language = TargetLanguage(rawValue: targetLanguage) ?? .none
-            var textForTTS = llmResult.summarizedText
-            var translationResult: TranslationResult? = nil
-
-            if language != .none {
-                isTranslating = true
-                let translationModel = LLMModel(rawValue: translationModelSetting) ?? .gpt5Nano
-                logger.info("Translating summarized text to \(language.languageName) with model: \(translationModel.rawValue)", source: "AppState")
-
-                streamingTranslation = ""
-
-                translationResult = try await llmService.translateStreaming(
-                    text: llmResult.summarizedText,
-                    targetLanguage: language,
-                    model: translationModel,
-                    systemPrompt: translationPrompt(for: language),
-                    apiKey: effectiveApiKey,
-                    onChunk: { [weak self] chunk in
-                        guard let self = self else { return }
-                        self.logger.debug("Translation chunk received: \(chunk.count) chars", source: "AppState")
-                        self.streamingTranslation += chunk
-                    }
-                )
-
-                logger.info("Translation complete: \(translationResult!.translatedText.count) chars", source: "AppState")
-                textForTTS = translationResult!.translatedText
-                isTranslating = false
-            }
-
-            // Now proceed with TTS
-            currentText = textForTTS
-            isPlaying = true
-            isLoading = false
+            streamingTranslation = ""
 
             // Reset tracking state
+            audioDataLock.lock()
             accumulatedAudioData = Data()
+            audioDataLock.unlock()
             pendingHistorySave = nil
             historySaved = false
 
-            // Set display text for highlighting (translated summary or just summary)
-            displayText = textForTTS
-
-            // Reset audio player for fresh playback (must be before setEstimatedDuration)
+            // Prepare audio player
             audioPlayer.reset()
             audioPlayer.playbackSpeed = Float(playbackSpeed)
-            audioPlayer.setEstimatedDuration(forTextLength: textForTTS.count)
-            startProgressTracking()
+            // Estimate duration based on expected summary length (roughly 1/3 of original)
+            audioPlayer.setEstimatedDuration(forTextLength: text.count / 3)
 
-            let voice = TTSVoice(rawValue: selectedVoice) ?? .coral
-            logger.info("Using voice: \(voice.rawValue)", source: "AppState")
+            // Configure pipeline callbacks
+            interleavedPipeline.onSummarySentence = { [weak self] sentence in
+                guard let self = self else { return }
+                // Only update summary text when translation is disabled
+                guard language == .none else { return }
+                self.streamingSummary += sentence + " "
+                self.displayText = self.streamingSummary.trimmingCharacters(in: .whitespaces)
+            }
 
-            // Store pending history with both summarization and translation metadata
-            pendingHistorySave = (
-                text: text,  // Original text
-                voice: voice.rawValue,
-                inputTokens: 0,
-                summarizedText: llmResult.summarizedText,
-                llmInputTokens: llmResult.inputTokens,
-                llmOutputTokens: llmResult.outputTokens,
-                llmModel: llmResult.model,
-                translatedText: translationResult?.translatedText,
-                translationInputTokens: translationResult?.inputTokens,
-                translationOutputTokens: translationResult?.outputTokens,
-                translationModel: translationResult?.model,
-                targetLanguage: language != .none ? language.rawValue : nil
-            )
+            interleavedPipeline.onTranslatedSentence = { [weak self] sentence in
+                guard let self = self else { return }
+                self.streamingTranslation += sentence + " "
+                // Update displayText with translated text - this is what we want to show and speak
+                self.displayText = self.streamingTranslation.trimmingCharacters(in: .whitespaces)
+            }
 
+            interleavedPipeline.onAudioChunk = { [weak self] data in
+                guard let self = self else { return }
+                self.audioPlayer.enqueue(pcmData: data)
+                self.audioDataLock.lock()
+                self.accumulatedAudioData.append(data)
+                self.audioDataLock.unlock()
+            }
+
+            interleavedPipeline.onProgress = { [weak self] status in
+                self?.logger.debug("Pipeline progress: \(status)", source: "AppState")
+            }
+
+            interleavedPipeline.onComplete = { [weak self] result in
+                guard let self = self else { return }
+                self.logger.info("Interleaved pipeline complete - summarized: \(result.summarizedText.count) chars, translated: \(result.translatedText?.count ?? 0) chars", source: "AppState")
+                self.logger.debug("Result summarizedText: '\(result.summarizedText.prefix(100))...'", source: "AppState")
+                self.logger.debug("Result translatedText: '\(result.translatedText?.prefix(100) ?? "nil")...'", source: "AppState")
+
+                // Update display text with final result
+                let finalText = result.translatedText ?? result.summarizedText
+                self.displayText = finalText
+                self.currentText = finalText
+
+                // Store history data
+                self.pendingHistorySave = (
+                    text: text,
+                    voice: voice.rawValue,
+                    inputTokens: result.ttsInputTokens,
+                    summarizedText: result.summarizedText,
+                    llmInputTokens: result.summarizationInputTokens,
+                    llmOutputTokens: result.summarizationOutputTokens,
+                    llmModel: result.summarizationModel,
+                    translatedText: result.translatedText,
+                    translationInputTokens: result.translationInputTokens,
+                    translationOutputTokens: result.translationOutputTokens,
+                    translationModel: result.translationModel,
+                    targetLanguage: language != .none ? language.rawValue : nil
+                )
+
+                self.isSummarizing = false
+                self.isTranslating = false
+
+                // Mark stream as complete so player can detect when audio finishes
+                self.audioPlayer.markStreamComplete()
+            }
+
+            interleavedPipeline.onError = { [weak self] error in
+                guard let self = self else { return }
+                self.logger.error("Pipeline error: \(error.localizedDescription)", source: "AppState")
+                self.errorMessage = error.localizedDescription
+                self.isLoading = false
+                self.isPlaying = false
+                self.isSummarizing = false
+                self.isTranslating = false
+                self.audioLevelMonitor.stopMonitoring()
+            }
+
+            // Set up playback completion callback
             audioPlayer.onPlaybackComplete = { [weak self] in
                 self?.logger.info("Audio playback complete", source: "AppState")
                 Task { @MainActor in
@@ -783,41 +833,27 @@ final class AppState: ObservableObject {
                 }
             }
 
+            // Start audio playback and monitoring
+            isPlaying = true
+            isLoading = false
             audioLevelMonitor.startMonitoring(engine: audioPlayer.audioEngine)
+            startProgressTracking()
 
-            // TTS the final text
-            logger.info("Starting TTS stream for summarized+translated text...", source: "AppState")
-            ttsService.streamSpeech(
-                text: textForTTS,
-                voice: voice,
+            // Create pipeline config
+            let config = InterleavedPipelineConfig(
                 apiKey: effectiveApiKey,
-                onAudioChunk: { [weak self] data in
-                    self?.logger.debug("Received audio chunk: \(data.count) bytes", source: "AppState")
-                    self?.audioPlayer.enqueue(pcmData: data)
-                    self?.accumulatedAudioData.append(data)
-                },
-                onComplete: { [weak self] result in
-                    self?.logger.info("TTS stream complete, audio size: \(result.audioData.count) bytes, inputTokens: \(result.inputTokens)", source: "AppState")
-
-                    if var pending = self?.pendingHistorySave {
-                        pending.inputTokens = result.inputTokens
-                        self?.pendingHistorySave = pending
-                    }
-
-                    self?.audioPlayer.markStreamComplete()
-                },
-                onError: { [weak self] error in
-                    self?.logger.error("TTS error: \(error.localizedDescription)", source: "AppState")
-                    Task { @MainActor in
-                        self?.errorMessage = error.localizedDescription
-                        self?.isLoading = false
-                        self?.isPlaying = false
-                        self?.isSummarizing = false
-                        self?.isTranslating = false
-                        self?.audioLevelMonitor.stopMonitoring()
-                    }
-                }
+                summarizationModel: model,
+                summarizationPrompt: summarizationPrompt,
+                targetLanguage: language,
+                translationModel: translationModel,
+                translationPrompt: translationPrompt(for: language),
+                voice: voice,
+                ttsInstructions: "Speak naturally and clearly."
             )
+
+            // Start the interleaved pipeline
+            interleavedPipeline.start(text: text, config: config)
+
         } catch {
             logger.error("Summarize+Translate+TTS exception: \(error.localizedDescription)", source: "AppState")
             errorMessage = error.localizedDescription
@@ -890,6 +926,7 @@ final class AppState: ObservableObject {
         translationTask?.cancel()
         translationTask = nil
         llmService.cancel()
+        interleavedPipeline.cancel()
 
         // Stop progress tracking
         stopProgressTracking()
@@ -900,13 +937,21 @@ final class AppState: ObservableObject {
         audioLevelMonitor.stopMonitoring()
 
         // Save to history if we have accumulated audio and haven't saved yet
-        if !historySaved, let pending = pendingHistorySave, !accumulatedAudioData.isEmpty {
-            logger.info("Saving partial audio to history (\(accumulatedAudioData.count) bytes)", source: "AppState")
+        var audioSnapshot = Data()
+        audioDataLock.lock()
+        if !accumulatedAudioData.isEmpty {
+            audioSnapshot = accumulatedAudioData
+            accumulatedAudioData = Data()
+        }
+        audioDataLock.unlock()
+
+        if !historySaved, let pending = pendingHistorySave, !audioSnapshot.isEmpty {
+            logger.info("Saving partial audio to history (\(audioSnapshot.count) bytes)", source: "AppState")
             HistoryManager.shared.addEntry(
                 text: pending.text,
                 voice: pending.voice,
                 inputTokens: pending.inputTokens,
-                audioData: accumulatedAudioData,
+                audioData: audioSnapshot,
                 summarizedText: pending.summarizedText,
                 llmInputTokens: pending.llmInputTokens,
                 llmOutputTokens: pending.llmOutputTokens,
@@ -928,7 +973,9 @@ final class AppState: ObservableObject {
         streamingSummary = ""
         streamingTranslation = ""
         displayText = ""
+        audioDataLock.lock()
         accumulatedAudioData = Data()
+        audioDataLock.unlock()
         pendingHistorySave = nil
     }
 
@@ -939,13 +986,21 @@ final class AppState: ObservableObject {
         logger.info("Playback completed naturally", source: "AppState")
 
         // Save to history if not already saved
-        if !historySaved, let pending = pendingHistorySave, !accumulatedAudioData.isEmpty {
-            logger.info("Saving to history (\(accumulatedAudioData.count) bytes)", source: "AppState")
+        var audioSnapshot = Data()
+        audioDataLock.lock()
+        if !accumulatedAudioData.isEmpty {
+            audioSnapshot = accumulatedAudioData
+            accumulatedAudioData = Data()
+        }
+        audioDataLock.unlock()
+
+        if !historySaved, let pending = pendingHistorySave, !audioSnapshot.isEmpty {
+            logger.info("Saving to history (\(audioSnapshot.count) bytes)", source: "AppState")
             HistoryManager.shared.addEntry(
                 text: pending.text,
                 voice: pending.voice,
                 inputTokens: pending.inputTokens,
-                audioData: accumulatedAudioData,
+                audioData: audioSnapshot,
                 summarizedText: pending.summarizedText,
                 llmInputTokens: pending.llmInputTokens,
                 llmOutputTokens: pending.llmOutputTokens,
@@ -967,7 +1022,9 @@ final class AppState: ObservableObject {
         streamingSummary = ""
         streamingTranslation = ""
         displayText = ""
+        audioDataLock.lock()
         accumulatedAudioData = Data()
+        audioDataLock.unlock()
         pendingHistorySave = nil
     }
 }

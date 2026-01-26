@@ -1,7 +1,9 @@
 import SwiftUI
+import AppKit
 
 struct HistoryTableView: View {
     let entries: [HistoryEntry]
+    @Binding var selection: Set<HistoryEntry.ID>
     @Binding var playingEntryId: UUID?
     @Binding var playbackProgress: Double
     let audioDurations: [UUID: TimeInterval]
@@ -10,7 +12,7 @@ struct HistoryTableView: View {
     let onSeek: (HistoryEntry, Double) -> Void
 
     var body: some View {
-        Table(entries) {
+        Table(entries, selection: $selection) {
             TableColumn("Time") { entry in
                 Text(entry.formattedTimestamp)
                     .font(.system(.caption, design: .monospaced))
@@ -159,6 +161,57 @@ struct HistoryTableView: View {
             .width(min: 80, ideal: 140)
         }
         .tableStyle(.inset(alternatesRowBackgrounds: true))
+        .contextMenu(forSelectionType: HistoryEntry.ID.self) { selectedIds in
+            Button("Copy") {
+                copyEntries(ids: selectedIds)
+            }
+            .keyboardShortcut("c", modifiers: .command)
+
+            Divider()
+
+            Button("Delete", role: .destructive) {
+                for id in selectedIds {
+                    if let entry = entries.first(where: { $0.id == id }) {
+                        onDelete(entry)
+                    }
+                }
+            }
+        } primaryAction: { selectedIds in
+            // Double-click plays the entry
+            if let id = selectedIds.first,
+               let entry = entries.first(where: { $0.id == id }) {
+                onReplay(entry)
+            }
+        }
+    }
+
+    private func copyEntries(ids: Set<HistoryEntry.ID>) {
+        let selected = entries.filter { ids.contains($0.id) }
+        guard !selected.isEmpty else { return }
+
+        let text = selected.map { entry in
+            formatEntryForCopy(entry)
+        }.joined(separator: "\n\n---\n\n")
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func formatEntryForCopy(_ entry: HistoryEntry) -> String {
+        var lines: [String] = []
+        lines.append("[\(entry.formattedTimestamp)]")
+        lines.append("Original: \(entry.text)")
+
+        if let summary = entry.summarizedText {
+            lines.append("Summary: \(summary)")
+        }
+
+        if let translation = entry.translatedText {
+            let lang = entry.targetLanguageDisplayName ?? entry.targetLanguage ?? "Unknown"
+            lines.append("Translation (\(lang)): \(translation)")
+        }
+
+        return lines.joined(separator: "\n")
     }
     
     /// Truncate text to a maximum length with ellipsis

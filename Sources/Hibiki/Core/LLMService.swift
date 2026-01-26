@@ -123,6 +123,7 @@ enum LLMError: Error, LocalizedError {
 final class LLMService {
     private let logger = DebugLogger.shared
     private var currentTask: URLSessionTask?
+    private var isCancelled = false
 
     func summarize(
         text: String,
@@ -242,8 +243,89 @@ final class LLMService {
     }
 
     func cancel() {
+        isCancelled = true
         currentTask?.cancel()
         currentTask = nil
+    }
+
+    /// Translate a single sentence with optional context from previous sentences.
+    /// Optimized for lower latency compared to streaming for small inputs.
+    /// - Parameters:
+    ///   - sentence: The sentence to translate
+    ///   - context: Optional array of previous sentences for translation consistency
+    ///   - targetLanguage: Target language for translation
+    ///   - model: LLM model to use
+    ///   - systemPrompt: System prompt for translation
+    ///   - apiKey: OpenAI API key
+    /// - Returns: The translated sentence
+    func translateSentence(
+        sentence: String,
+        context: [String]? = nil,
+        targetLanguage: TargetLanguage,
+        model: LLMModel,
+        systemPrompt: String,
+        apiKey: String
+    ) async throws -> String {
+        guard targetLanguage != .none else {
+            return sentence
+        }
+
+        guard !apiKey.isEmpty else {
+            throw LLMError.missingAPIKey
+        }
+
+        guard let url = URL(string: "https://api.openai.com/v1/chat/completions") else {
+            throw LLMError.invalidURL
+        }
+
+        let userContent = buildTranslationUserContent(input: sentence, context: context)
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 30
+
+        let body: [String: Any] = [
+            "model": model.rawValue,
+            "messages": [
+                ["role": "system", "content": systemPrompt],
+                ["role": "user", "content": userContent]
+            ],
+            "max_completion_tokens": 1024
+        ]
+
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        logger.debug("Translating sentence (\(sentence.count) chars) to \(targetLanguage.languageName)", source: "LLMService")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw LLMError.apiError(statusCode: 0, message: "Invalid response")
+        }
+
+        guard httpResponse.statusCode == 200 else {
+            let errorMessage = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let message = (errorMessage?["error"] as? [String: Any])?["message"] as? String
+            throw LLMError.apiError(statusCode: httpResponse.statusCode, message: message)
+        }
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let firstChoice = choices.first,
+              let message = firstChoice["message"] as? [String: Any],
+              let content = message["content"] as? String else {
+            throw LLMError.decodingError
+        }
+
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw LLMError.emptyResponse
+        }
+
+        logger.debug("Sentence translation complete: \(trimmed.count) chars", source: "LLMService")
+        return trimmed
     }
     
     /// Streaming summarization - yields text chunks as they arrive
@@ -367,6 +449,7 @@ final class LLMService {
     /// Streaming translation - yields text chunks as they arrive
     func translateStreaming(
         text: String,
+        context: [String]? = nil,
         targetLanguage: TargetLanguage,
         model: LLMModel,
         systemPrompt: String,
@@ -400,11 +483,13 @@ final class LLMService {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 120
 
+        let userContent = buildTranslationUserContent(input: text, context: context)
+
         let body: [String: Any] = [
             "model": model.rawValue,
             "messages": [
                 ["role": "system", "content": systemPrompt],
-                ["role": "user", "content": text]
+                ["role": "user", "content": userContent]
             ],
             "max_completion_tokens": 8192,
             "stream": true,
@@ -486,5 +571,22 @@ final class LLMService {
             model: model.rawValue,
             targetLanguage: targetLanguage
         )
+    }
+
+    private func buildTranslationUserContent(input: String, context: [String]?) -> String {
+        guard let context = context, !context.isEmpty else {
+            return input
+        }
+
+        let contextText = context.suffix(3).joined(separator: "\n")
+        return """
+        Previous context (for consistency, do not translate this):
+        ---
+        \(contextText)
+        ---
+
+        Translate only the following sentence:
+        \(input)
+        """
     }
 }
