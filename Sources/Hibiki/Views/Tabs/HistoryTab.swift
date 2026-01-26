@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Manages playback state for history replay with proper lifecycle handling
 final class HistoryPlaybackManager: ObservableObject {
@@ -136,6 +137,7 @@ struct HistoryTab: View {
     // Local copy of entries to avoid observation issues
     @State private var entries: [HistoryEntry] = []
     @State private var totalCost: String = "$0.000000"
+    @State private var selectedEntries: Set<HistoryEntry.ID> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -149,6 +151,13 @@ struct HistoryTab: View {
                     .foregroundColor(.secondary)
 
                 Spacer()
+
+                if !selectedEntries.isEmpty {
+                    Button("Copy Selected") {
+                        copySelectedEntries()
+                    }
+                    .controlSize(.small)
+                }
 
                 Button("Clear All") {
                     playbackManager.stop()
@@ -167,6 +176,7 @@ struct HistoryTab: View {
             } else {
                 HistoryTableView(
                     entries: entries,
+                    selection: $selectedEntries,
                     playingEntryId: $playbackManager.playingEntryId,
                     playbackProgress: $playbackManager.playbackProgress,
                     audioDurations: audioDurations,
@@ -174,6 +184,10 @@ struct HistoryTab: View {
                     onDelete: deleteEntry,
                     onSeek: seekToPosition
                 )
+                .onCopyCommand {
+                    copySelectedEntries()
+                    return selectedItemProviders()
+                }
             }
 
             Divider()
@@ -252,5 +266,45 @@ struct HistoryTab: View {
         }
         historyManager.deleteEntry(entry)
         refreshEntries()
+    }
+
+    private func copySelectedEntries() {
+        let selected = entries.filter { selectedEntries.contains($0.id) }
+        guard !selected.isEmpty else { return }
+
+        let text = selected.map { entry in
+            formatEntryForCopy(entry)
+        }.joined(separator: "\n\n---\n\n")
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func selectedItemProviders() -> [NSItemProvider] {
+        let selected = entries.filter { selectedEntries.contains($0.id) }
+        guard !selected.isEmpty else { return [] }
+
+        let text = selected.map { entry in
+            formatEntryForCopy(entry)
+        }.joined(separator: "\n\n---\n\n")
+
+        return [NSItemProvider(object: text as NSString)]
+    }
+
+    private func formatEntryForCopy(_ entry: HistoryEntry) -> String {
+        var lines: [String] = []
+        lines.append("[\(entry.formattedTimestamp)]")
+        lines.append("Original: \(entry.text)")
+
+        if let summary = entry.summarizedText {
+            lines.append("Summary: \(summary)")
+        }
+
+        if let translation = entry.translatedText {
+            let lang = entry.targetLanguageDisplayName ?? entry.targetLanguage ?? "Unknown"
+            lines.append("Translation (\(lang)): \(translation)")
+        }
+
+        return lines.joined(separator: "\n")
     }
 }

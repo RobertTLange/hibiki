@@ -23,6 +23,11 @@ let package = Package(
                 .copy("Resources/AppIcon.icns"),
                 .process("Resources/Assets.xcassets")
             ]
+        ),
+        .testTarget(
+            name: "HibikiTests",
+            dependencies: [],
+            path: "Tests/HibikiTests"
         )
     ]
 )

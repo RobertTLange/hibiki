@@ -1,10 +1,12 @@
 import SwiftUI
+import AppKit
 
 struct DebugTab: View {
     private let logger = DebugLogger.shared
 
     // Local copy of entries to avoid observation issues
     @State private var entries: [LogEntry] = []
+    @State private var selectedEntries: Set<LogEntry.ID> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -18,6 +20,14 @@ struct DebugTab: View {
                     .foregroundColor(.secondary)
 
                 Spacer()
+
+                if !selectedEntries.isEmpty {
+                    Button("Copy Selected") {
+                        copySelectedEntries()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
 
                 Button("Clear") {
                     logger.clear()
@@ -46,7 +56,11 @@ struct DebugTab: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                DebugLogTableView(entries: entries)
+                DebugLogTableView(entries: entries, selection: $selectedEntries)
+                    .onCopyCommand {
+                        copySelectedEntries()
+                        return selectedItemProviders()
+                    }
             }
         }
         .onAppear {
@@ -56,5 +70,28 @@ struct DebugTab: View {
 
     private func refreshEntries() {
         entries = logger.entries
+    }
+
+    private func copySelectedEntries() {
+        let selectedLogs = entries.filter { selectedEntries.contains($0.id) }
+        guard !selectedLogs.isEmpty else { return }
+
+        let text = selectedLogs.map { entry in
+            "[\(entry.formattedTime)] [\(entry.level.rawValue)] [\(entry.source)] \(entry.message)"
+        }.joined(separator: "\n")
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func selectedItemProviders() -> [NSItemProvider] {
+        let selectedLogs = entries.filter { selectedEntries.contains($0.id) }
+        guard !selectedLogs.isEmpty else { return [] }
+
+        let text = selectedLogs.map { entry in
+            "[\(entry.formattedTime)] [\(entry.level.rawValue)] [\(entry.source)] \(entry.message)"
+        }.joined(separator: "\n")
+
+        return [NSItemProvider(object: text as NSString)]
     }
 }

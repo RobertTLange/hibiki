@@ -14,6 +14,7 @@ final class HistoryManager {
 
     private let maxEntries = 100
     private let maxDiskSpaceMB: Double = 500
+    private let fileIOQueue = DispatchQueue(label: "com.hibiki.history.fileio", qos: .utility)
 
     private var appSupportDirectory: URL {
         let paths = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
@@ -54,13 +55,6 @@ final class HistoryManager {
         let audioFileName = "\(UUID().uuidString).pcm"
         let audioURL = audioDirectory.appendingPathComponent(audioFileName)
 
-        // Save audio file
-        do {
-            try audioData.write(to: audioURL)
-        } catch {
-            print("[Hibiki] Failed to save audio file: \(error)")
-        }
-
         let entry = HistoryEntry(
             text: text,
             voice: voice,
@@ -77,10 +71,19 @@ final class HistoryManager {
             targetLanguage: targetLanguage
         )
 
+        // Save audio file off the main thread to avoid UI stalls
+        fileIOQueue.async {
+            do {
+                try audioData.write(to: audioURL)
+            } catch {
+                print("[Hibiki] Failed to save audio file: \(error)")
+            }
+        }
+
         DispatchQueue.main.async {
             self.entries.insert(entry, at: 0)
-            self.saveHistory()
             self.enforceRetentionPolicy()
+            self.saveHistory()
             self.entriesDidChange.send()
         }
 
@@ -90,7 +93,9 @@ final class HistoryManager {
     func deleteEntry(_ entry: HistoryEntry) {
         // Delete audio file
         let audioURL = audioDirectory.appendingPathComponent(entry.audioFileName)
-        try? FileManager.default.removeItem(at: audioURL)
+        fileIOQueue.async {
+            try? FileManager.default.removeItem(at: audioURL)
+        }
 
         DispatchQueue.main.async {
             self.entries.removeAll { $0.id == entry.id }
@@ -101,9 +106,11 @@ final class HistoryManager {
 
     func clearAllHistory() {
         // Delete all audio files
-        for entry in entries {
-            let audioURL = audioDirectory.appendingPathComponent(entry.audioFileName)
-            try? FileManager.default.removeItem(at: audioURL)
+        let audioURLs = entries.map { audioDirectory.appendingPathComponent($0.audioFileName) }
+        fileIOQueue.async {
+            for audioURL in audioURLs {
+                try? FileManager.default.removeItem(at: audioURL)
+            }
         }
 
         DispatchQueue.main.async {
@@ -172,10 +179,13 @@ final class HistoryManager {
     }
 
     private func enforceRetentionPolicy() {
+        var removedEntries: [HistoryEntry] = []
+
         // Enforce max entries
         while entries.count > maxEntries {
             if let lastEntry = entries.last {
-                deleteEntry(lastEntry)
+                removedEntries.append(lastEntry)
+                entries.removeLast()
             }
         }
 
@@ -185,8 +195,18 @@ final class HistoryManager {
 
         while totalSize > maxBytes && !entries.isEmpty {
             if let lastEntry = entries.last {
-                deleteEntry(lastEntry)
+                removedEntries.append(lastEntry)
+                entries.removeLast()
                 totalSize = calculateTotalDiskUsage()
+            }
+        }
+
+        if !removedEntries.isEmpty {
+            let urlsToDelete = removedEntries.map { audioDirectory.appendingPathComponent($0.audioFileName) }
+            fileIOQueue.async {
+                for url in urlsToDelete {
+                    try? FileManager.default.removeItem(at: url)
+                }
             }
         }
     }

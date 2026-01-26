@@ -125,7 +125,6 @@ final class StreamingAudioPlayer {
     }
 
     func enqueue(pcmData: Data) {
-        print("[Hibiki] 🎵 AudioPlayer.enqueue: \(pcmData.count) bytes")
         bufferQueue.async { [weak self] in
             guard let self = self, !self.isStopping else { return }
 

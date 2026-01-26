@@ -14,6 +14,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var translatingObserver: AnyCancellable?
     private var collapsedObserver: AnyCancellable?
     private var keyboardMonitor: Any?
+    private var lastHotkeyTime: Date?
+
+    /// Cooldown period after a hotkey is triggered before Option-only can cancel
+    /// This prevents the release of a hotkey combo (e.g., Option+L) from triggering stop
+    /// 0.5s is enough time for key release while allowing quick intentional stops
+    private let hotkeyStopCooldown: TimeInterval = 0.5
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Ensure only one instance is running
@@ -313,7 +319,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func installKeyboardMonitor() {
         guard keyboardMonitor == nil else { return }
 
-        keyboardMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
+        keyboardMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
             guard AppState.shared.isPlaying || AppState.shared.isSummarizing || AppState.shared.isTranslating else { return }
 
             // Check for Option key alone (stop) - triggered on flagsChanged
@@ -321,6 +327,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
                 // Option key pressed alone (no other modifiers)
                 if flags == .option {
+                    // Check cooldown period after hotkey trigger to prevent Option release from stopping
+                    if let lastHotkey = AppState.shared.lastHotkeyTriggerTime,
+                       let cooldown = self?.hotkeyStopCooldown,
+                       Date().timeIntervalSince(lastHotkey) < cooldown {
+                        // Within cooldown period - ignore Option-only stop
+                        return
+                    }
                     DispatchQueue.main.async {
                         AppState.shared.stopPlayback()
                     }

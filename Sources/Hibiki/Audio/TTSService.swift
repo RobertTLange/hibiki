@@ -22,6 +22,8 @@ final class TTSService: NSObject {
     private var isTokenEstimated: Bool = false
     private var responseHeaders: [AnyHashable: Any] = [:]
     private var inputText: String = ""
+    private var receivedChunkCount: Int = 0
+    private var receivedChunkBytes: Int = 0
 
     // Multi-chunk processing state
     private var chunks: [String] = []
@@ -31,6 +33,17 @@ final class TTSService: NSObject {
     private var currentVoice: TTSVoice = .coral
     private var currentApiKey: String = ""
     private var currentInstructions: String = ""
+
+    // Pipeline queue state for interleaved processing
+    private var sentenceQueue: [String] = []
+    private var isProcessingSentence: Bool = false
+    private var allSentencesEnqueued: Bool = false
+    private var pipelineOnAudioChunk: ((Data) -> Void)?
+    private var pipelineOnSentenceComplete: ((Int) -> Void)?  // Called with token count
+    private var pipelineOnAllComplete: ((Int) -> Void)?  // Called with total tokens
+    private var pipelineOnError: ((Error) -> Void)?
+    private var pipelineTotalTokens: Int = 0
+    private let pipelineQueue = DispatchQueue(label: "com.hibiki.tts.pipeline")
 
     func streamSpeech(
         text: String,
@@ -51,6 +64,8 @@ final class TTSService: NSObject {
         isTokenEstimated = false
         responseHeaders = [:]
         isCancelled = false
+        receivedChunkCount = 0
+        receivedChunkBytes = 0
 
         self.onAudioChunk = onAudioChunk
         self.onComplete = onComplete
@@ -162,12 +177,220 @@ final class TTSService: NSObject {
         chunks = []
         currentChunkIndex = 0
         totalInputTokens = 0
+        // Reset pipeline state
+        pipelineQueue.sync {
+            sentenceQueue = []
+            isProcessingSentence = false
+            allSentencesEnqueued = false
+            pipelineTotalTokens = 0
+        }
+    }
+
+    // MARK: - Pipeline API for Interleaved Processing
+
+    /// Start a new pipeline session for interleaved TTS processing.
+    /// Call enqueueSentence() to add sentences, then markAllSentencesEnqueued() when done.
+    /// - Parameters:
+    ///   - voice: TTS voice to use
+    ///   - apiKey: OpenAI API key
+    ///   - instructions: TTS instructions
+    ///   - onAudioChunk: Called for each audio chunk received
+    ///   - onSentenceComplete: Called when a sentence finishes (with token count)
+    ///   - onAllComplete: Called when all sentences are processed (with total tokens)
+    ///   - onError: Called on error
+    func startPipeline(
+        voice: TTSVoice,
+        apiKey: String,
+        instructions: String = "Speak naturally and clearly.",
+        onAudioChunk: @escaping (Data) -> Void,
+        onSentenceComplete: @escaping (Int) -> Void,
+        onAllComplete: @escaping (Int) -> Void,
+        onError: @escaping (Error) -> Void
+    ) {
+        print("[Hibiki] TTSService.startPipeline called")
+
+        // Reset pipeline state
+        pipelineQueue.sync {
+            sentenceQueue = []
+            isProcessingSentence = false
+            allSentencesEnqueued = false
+            pipelineTotalTokens = 0
+        }
+
+        isCancelled = false
+        currentVoice = voice
+        currentApiKey = apiKey
+        currentInstructions = instructions
+        pipelineOnAudioChunk = onAudioChunk
+        pipelineOnSentenceComplete = onSentenceComplete
+        pipelineOnAllComplete = onAllComplete
+        pipelineOnError = onError
+        accumulatedAudioData = Data()
+
+        guard !apiKey.isEmpty else {
+            print("[Hibiki] ❌ API key is empty in TTSService pipeline")
+            onError(TTSError.missingAPIKey)
+            return
+        }
+    }
+
+    /// Enqueue a sentence for TTS processing in the pipeline.
+    /// Sentences are processed sequentially in order.
+    /// - Parameter sentence: The sentence to speak
+    func enqueueSentence(_ sentence: String) {
+        let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        print("[Hibiki] 📝 Enqueueing sentence for TTS: \(trimmed.prefix(50))...")
+
+        pipelineQueue.sync {
+            sentenceQueue.append(trimmed)
+        }
+
+        processNextSentenceIfNeeded()
+    }
+
+    /// Mark that all sentences have been enqueued.
+    /// The pipeline will complete after processing remaining sentences.
+    func markAllSentencesEnqueued() {
+        print("[Hibiki] 🏁 All sentences enqueued")
+        pipelineQueue.sync {
+            allSentencesEnqueued = true
+        }
+        processNextSentenceIfNeeded()
+    }
+
+    /// Process the next sentence in the queue if not already processing
+    private func processNextSentenceIfNeeded() {
+        var shouldProcess = false
+        var sentence: String?
+        var shouldComplete = false
+
+        pipelineQueue.sync {
+            if isCancelled {
+                return
+            }
+
+            if !isProcessingSentence && !sentenceQueue.isEmpty {
+                isProcessingSentence = true
+                sentence = sentenceQueue.removeFirst()
+                shouldProcess = true
+            } else if !isProcessingSentence && sentenceQueue.isEmpty && allSentencesEnqueued {
+                shouldComplete = true
+            }
+        }
+
+        if shouldComplete {
+            print("[Hibiki] ✅ Pipeline complete, total tokens: \(pipelineTotalTokens)")
+            pipelineOnAllComplete?(pipelineTotalTokens)
+            return
+        }
+
+        if shouldProcess, let text = sentence {
+            streamPipelineSentence(text: text)
+        }
+    }
+
+    /// Stream a single sentence in the pipeline
+    private func streamPipelineSentence(text: String) {
+        print("[Hibiki] 🔄 Processing pipeline sentence (\(text.count) chars)")
+
+        inputText = text
+
+        guard let url = URL(string: "https://api.openai.com/v1/audio/speech") else {
+            print("[Hibiki] ❌ Invalid URL")
+            pipelineOnError?(TTSError.invalidURL)
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(currentApiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: Any] = [
+            "model": "gpt-4o-mini-tts",
+            "input": text,
+            "voice": currentVoice.rawValue,
+            "instructions": currentInstructions,
+            "response_format": "pcm"
+        ]
+
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        } catch {
+            print("[Hibiki] ❌ JSON encoding error: \(error)")
+            pipelineOnError?(error)
+            return
+        }
+
+        // Use shared URL session for pipeline to avoid delegate issues
+        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+
+            if self.isCancelled {
+                return
+            }
+
+            if let error = error {
+                if (error as NSError).code != NSURLErrorCancelled {
+                    print("[Hibiki] ❌ Pipeline TTS error: \(error.localizedDescription)")
+                    self.pipelineOnError?(error)
+                }
+                return
+            }
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                self.pipelineOnError?(TTSError.apiError(statusCode: 0))
+                return
+            }
+
+            guard httpResponse.statusCode == 200 else {
+                print("[Hibiki] ❌ Pipeline TTS API error: HTTP \(httpResponse.statusCode)")
+                self.pipelineOnError?(TTSError.apiError(statusCode: httpResponse.statusCode))
+                return
+            }
+
+            guard let audioData = data, !audioData.isEmpty else {
+                print("[Hibiki] ⚠️ Pipeline TTS returned empty data")
+                self.finishCurrentSentence(tokens: 0)
+                return
+            }
+
+            // Estimate tokens from text length
+            let estimatedTokens = max(1, text.count / 4)
+
+            print("[Hibiki] ✅ Pipeline sentence complete: \(audioData.count) bytes, ~\(estimatedTokens) tokens")
+
+            // Deliver audio chunk
+            self.pipelineOnAudioChunk?(audioData)
+
+            // Update totals and signal completion
+            self.finishCurrentSentence(tokens: estimatedTokens)
+        }
+
+        task.resume()
+    }
+
+    /// Mark current sentence as complete and process next
+    private func finishCurrentSentence(tokens: Int) {
+        pipelineQueue.sync {
+            pipelineTotalTokens += tokens
+            isProcessingSentence = false
+        }
+
+        pipelineOnSentenceComplete?(tokens)
+        processNextSentenceIfNeeded()
     }
 }
 
 extension TTSService: URLSessionDataDelegate {
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        print("[Hibiki] 📦 Received data chunk: \(data.count) bytes")
+        receivedChunkCount += 1
+        receivedChunkBytes += data.count
+        if receivedChunkCount == 1 || receivedChunkCount % 20 == 0 {
+            print("[Hibiki] 📦 Received \(receivedChunkCount) chunk(s), \(receivedChunkBytes) bytes total")
+        }
         accumulatedAudioData.append(data)
         onAudioChunk?(data)
     }
