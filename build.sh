@@ -4,21 +4,23 @@ set -e
 # Parse arguments
 BUILD_DMG=false
 RUN_APP=false
+INSTALL_CLI=false
 for arg in "$@"; do
     case $arg in
         --dmg) BUILD_DMG=true ;;
         --run) RUN_APP=true ;;
+        --install) INSTALL_CLI=true ;;
     esac
 done
 
 # Use release build for DMG, debug for regular builds
 if [ "$BUILD_DMG" = true ]; then
     echo "Building Hibiki (release)..."
-    swift build -c release
+    swift build -c release --product Hibiki
     EXECUTABLE=".build/release/Hibiki"
 else
     echo "Building Hibiki..."
-    swift build
+    swift build --product Hibiki
     EXECUTABLE=".build/debug/Hibiki"
 fi
 
@@ -85,6 +87,17 @@ cat > "$APP_DIR/Contents/Info.plist" << 'EOF'
     <true/>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>Hibiki CLI</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>hibiki</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>
 EOF
@@ -93,6 +106,59 @@ EOF
 codesign --force --deep --sign - "$APP_DIR"
 
 echo "Built Hibiki.app at: $APP_DIR"
+
+# Build CLI tool
+echo "Building hibiki CLI..."
+
+# Clean up any stray object files from SPM bug (object file outputs to cwd instead of build dir)
+rm -f HibikiCLI.o main.o
+
+if [ "$BUILD_DMG" = true ]; then
+    BUILD_CONFIG="release"
+    CLI_EXECUTABLE=".build/release/hibiki"
+else
+    BUILD_CONFIG="debug"
+    CLI_EXECUTABLE=".build/debug/hibiki"
+fi
+
+# First attempt - may fail due to SPM bug with object file location
+swift build -c "$BUILD_CONFIG" --product hibiki 2>/dev/null || true
+
+# Workaround for SPM bug: object file is placed in cwd instead of build dir
+# Check if the object file ended up in the wrong place
+if [ -f "HibikiCLI.o" ] && [ ! -f ".build/arm64-apple-macosx/$BUILD_CONFIG/hibiki.build/HibikiCLI.swift.o" ]; then
+    echo "Applying SPM object file workaround..."
+    mkdir -p ".build/arm64-apple-macosx/$BUILD_CONFIG/hibiki.build"
+    mv HibikiCLI.o ".build/arm64-apple-macosx/$BUILD_CONFIG/hibiki.build/HibikiCLI.swift.o"
+    # Rebuild to link
+    swift build -c "$BUILD_CONFIG" --product hibiki
+fi
+
+# Clean up any remaining stray object files
+rm -f HibikiCLI.o main.o
+
+# Copy CLI to app bundle's MacOS directory for easy access
+cp "$CLI_EXECUTABLE" "$APP_DIR/Contents/MacOS/hibiki-cli"
+echo "CLI tool available at: $CLI_EXECUTABLE"
+echo "Also copied to: $APP_DIR/Contents/MacOS/hibiki-cli"
+
+# Install CLI to /usr/local/bin if requested
+if [ "$INSTALL_CLI" = true ]; then
+    echo "Installing hibiki CLI to /usr/local/bin..."
+    INSTALL_PATH="/usr/local/bin/hibiki"
+    CLI_ABSOLUTE_PATH="$(cd "$(dirname "$CLI_EXECUTABLE")" && pwd)/$(basename "$CLI_EXECUTABLE")"
+
+    # Try without sudo first
+    if ln -sf "$CLI_ABSOLUTE_PATH" "$INSTALL_PATH" 2>/dev/null; then
+        echo "CLI installed: $INSTALL_PATH -> $CLI_ABSOLUTE_PATH"
+    else
+        # Need sudo
+        echo "Requires sudo to install to /usr/local/bin"
+        sudo ln -sf "$CLI_ABSOLUTE_PATH" "$INSTALL_PATH"
+        echo "CLI installed: $INSTALL_PATH -> $CLI_ABSOLUTE_PATH"
+    fi
+    echo "You can now run 'hibiki --help' from anywhere"
+fi
 
 # Reset accessibility permission so it re-registers with the .app bundle (and its icon)
 tccutil reset Accessibility com.superlisten.hibiki 2>/dev/null || true
