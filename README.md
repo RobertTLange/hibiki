@@ -206,6 +206,59 @@ hibiki --help
 
 **How it works:** The CLI sends a request to the running Hibiki app via a custom URL scheme (`hibiki://`). The app processes the text using your configured settings (voice, API key, etc.) and plays the audio through the AudioPlayerPanel. The entry is saved to history just like hotkey-triggered requests.
 
+### Claude Code Hook Integration
+
+Hibiki can be used as a [Claude Code hook](https://docs.anthropic.com/en/docs/claude-code/hooks) to speak Claude's responses aloud. For example, configure a `Stop` hook to read the final assistant message when a session ends.
+
+**1. Create the hook script** (`~/.claude/hooks/speak-summary.sh`):
+
+```bash
+#!/bin/bash
+input=$(cat)
+transcript_path=$(echo "$input" | jq -r '.transcript_path' | sed "s|^~|$HOME|")
+
+if [[ ! -f "$transcript_path" ]]; then
+    exit 1
+fi
+
+# Extract the last assistant message (up to 500 chars)
+last_message=""
+while IFS= read -r line; do
+    msg_type=$(echo "$line" | jq -r '.type // empty' 2>/dev/null)
+    if [[ "$msg_type" == "assistant" ]]; then
+        last_message=$(echo "$line" | jq -r '.message.content[] | select(.type == "text") | .text' 2>/dev/null | head -c 500)
+    fi
+done < "$transcript_path"
+
+if [[ -n "$last_message" ]]; then
+    hibiki --text "$last_message" &
+fi
+```
+
+Make it executable: `chmod +x ~/.claude/hooks/speak-summary.sh`
+
+**2. Configure the hook** in your Claude Code settings (`~/.claude/settings.json` or project `.claude/settings.json`):
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/speak-summary.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Now when you exit Claude Code, Hibiki will read Claude's final response aloud.
+
 ## Troubleshooting
 
 ### Text not being captured from Chrome/web browsers
