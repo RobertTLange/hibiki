@@ -6,6 +6,9 @@ DerivedData/
 # Swift Package Manager
 .swiftpm/
 Package.resolved
+*.d
+*.dia
+*.swiftdeps
 
 # Xcode
 *.xcodeproj/
