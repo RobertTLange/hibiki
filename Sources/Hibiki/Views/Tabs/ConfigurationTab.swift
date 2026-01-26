@@ -5,6 +5,8 @@ struct ConfigurationTab: View {
     @EnvironmentObject var appState: AppState
     @State private var showKey = false
     @State private var hasAccessibility = false
+    @State private var cliInstallStatus: CLIInstallStatus = .unknown
+    @State private var isInstallingCLI = false
 
     private let asciiArt = """
          _     _ _     _ _    _              .-----------.
@@ -117,6 +119,51 @@ struct ConfigurationTab: View {
                             Text(hasAccessibility
                                  ? "Hibiki can read selected text."
                                  : "Grant in System Settings > Privacy > Accessibility.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.vertical, 4)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    // CLI Tool Section
+                    GroupBox("CLI Tool") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Image(systemName: cliInstallStatus.iconName)
+                                    .foregroundColor(cliInstallStatus.iconColor)
+                                    .font(.title2)
+
+                                VStack(alignment: .leading) {
+                                    Text("Terminal Command")
+                                        .fontWeight(.medium)
+                                    Text(cliInstallStatus.statusText)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+
+                                Spacer()
+
+                                if isInstallingCLI {
+                                    ProgressView()
+                                        .scaleEffect(0.7)
+                                } else if cliInstallStatus == .notInstalled {
+                                    Button(cliInstallStatus.buttonTitle) {
+                                        installCLI()
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                } else {
+                                    Button(cliInstallStatus.buttonTitle) {
+                                        installCLI()
+                                    }
+                                    .disabled(!cliInstallStatus.canInstall)
+                                }
+                            }
+
+                            Text(cliInstallStatus.helpText)
                                 .font(.caption)
                                 .foregroundColor(.secondary)
 
@@ -376,11 +423,119 @@ struct ConfigurationTab: View {
             .padding()
         }
         .onAppear {
-            checkPermissions()
+            checkPermissions(autoOpen: true)
+            checkCLIStatus()
         }
     }
 
-    private func checkPermissions() {
+    private func checkPermissions(autoOpen: Bool = false) {
         hasAccessibility = PermissionManager.shared.checkAccessibility()
+
+        // Automatically open Accessibility settings if permission not granted
+        if autoOpen && !hasAccessibility {
+            PermissionManager.shared.requestAccessibilityPermission()
+        }
+    }
+
+    private func checkCLIStatus() {
+        let installer = CLIInstaller.shared
+        if !installer.isRunningFromApplications {
+            cliInstallStatus = .notFromApplications
+        } else if installer.isCorrectlyLinked {
+            cliInstallStatus = .installed
+        } else if installer.isInstalled {
+            cliInstallStatus = .outdated
+        } else {
+            cliInstallStatus = .notInstalled
+        }
+    }
+
+    private func installCLI() {
+        isInstallingCLI = true
+        CLIInstaller.shared.installWithAdminPrivileges { result in
+            isInstallingCLI = false
+            switch result {
+            case .success:
+                cliInstallStatus = .installed
+            case .failure(let error):
+                if case .userCancelled = error {
+                    // User cancelled, just refresh status
+                    checkCLIStatus()
+                } else {
+                    // Show error (status unchanged)
+                    checkCLIStatus()
+                }
+            }
+        }
+    }
+}
+
+/// Status of CLI tool installation
+enum CLIInstallStatus {
+    case unknown
+    case notFromApplications
+    case notInstalled
+    case outdated
+    case installed
+
+    var iconName: String {
+        switch self {
+        case .unknown: return "questionmark.circle"
+        case .notFromApplications: return "info.circle"
+        case .notInstalled: return "xmark.circle.fill"
+        case .outdated: return "exclamationmark.triangle.fill"
+        case .installed: return "checkmark.circle.fill"
+        }
+    }
+
+    var iconColor: Color {
+        switch self {
+        case .unknown: return .secondary
+        case .notFromApplications: return .secondary
+        case .notInstalled: return .red
+        case .outdated: return .orange
+        case .installed: return .green
+        }
+    }
+
+    var statusText: String {
+        switch self {
+        case .unknown: return "Checking..."
+        case .notFromApplications: return "Run from Applications"
+        case .notInstalled: return "Not installed"
+        case .outdated: return "Needs update"
+        case .installed: return "Installed"
+        }
+    }
+
+    var buttonTitle: String {
+        switch self {
+        case .unknown, .notFromApplications: return "Refresh"
+        case .notInstalled: return "Install"
+        case .outdated: return "Update"
+        case .installed: return "Reinstall"
+        }
+    }
+
+    var helpText: String {
+        switch self {
+        case .unknown:
+            return "Checking CLI installation status..."
+        case .notFromApplications:
+            return "Move Hibiki to /Applications to install CLI."
+        case .notInstalled:
+            return "Install to use 'hibiki' from terminal."
+        case .outdated:
+            return "Update to link CLI to current app."
+        case .installed:
+            return "Run: hibiki --text \"Hello!\""
+        }
+    }
+
+    var canInstall: Bool {
+        switch self {
+        case .notInstalled, .outdated, .installed: return true
+        case .unknown, .notFromApplications: return false
+        }
     }
 }

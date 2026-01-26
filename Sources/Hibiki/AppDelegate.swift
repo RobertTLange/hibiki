@@ -44,6 +44,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let hasAccess = PermissionManager.shared.checkAccessibility()
         print("[Hibiki] Accessibility permission on launch: \(hasAccess)")
 
+        // Check if CLI should be offered for installation
+        checkCLIInstallation()
+
         // Observe playing state to show/hide audio player panel
         playingObserver = AppState.shared.$isPlaying
             .receive(on: DispatchQueue.main)
@@ -95,6 +98,85 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
            let iconImage = NSImage(contentsOf: iconURL) {
             NSApp.applicationIconImage = iconImage
         }
+    }
+
+    private func checkCLIInstallation() {
+        let installer = CLIInstaller.shared
+
+        // Only offer installation if running from /Applications and CLI not correctly linked
+        guard installer.shouldOfferInstallation else {
+            print("[Hibiki] CLI installation check: not needed (installed=\(installer.isInstalled), correctlyLinked=\(installer.isCorrectlyLinked), fromApps=\(installer.isRunningFromApplications))")
+            return
+        }
+
+        print("[Hibiki] CLI installation should be offered")
+
+        // Show dialog after a short delay to let the app finish launching
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.showCLIInstallDialog()
+        }
+    }
+
+    private func showCLIInstallDialog() {
+        // Temporarily become a regular app to show the dialog
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
+        let alert = NSAlert()
+        alert.messageText = "Install CLI Tool?"
+        alert.informativeText = "Would you like to install the 'hibiki' command-line tool? This allows you to use Hibiki from the terminal.\n\nThe CLI will be installed to /usr/local/bin/hibiki"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Install")
+        alert.addButton(withTitle: "Not Now")
+
+        let response = alert.runModal()
+
+        // Return to accessory mode
+        NSApp.setActivationPolicy(.accessory)
+
+        if response == .alertFirstButtonReturn {
+            // Try to install
+            CLIInstaller.shared.installWithAdminPrivileges { [weak self] result in
+                switch result {
+                case .success:
+                    self?.showCLIInstallSuccessAlert()
+                case .failure(let error):
+                    if case .userCancelled = error {
+                        // User cancelled, don't show error
+                        return
+                    }
+                    self?.showCLIInstallErrorAlert(error: error)
+                }
+            }
+        }
+    }
+
+    private func showCLIInstallSuccessAlert() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
+        let alert = NSAlert()
+        alert.messageText = "CLI Installed"
+        alert.informativeText = "The 'hibiki' command is now available. You can use it from any terminal:\n\nhibiki --text \"Hello, world!\""
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+
+        NSApp.setActivationPolicy(.accessory)
+    }
+
+    private func showCLIInstallErrorAlert(error: CLIInstallError) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
+        let alert = NSAlert()
+        alert.messageText = "Installation Failed"
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+
+        NSApp.setActivationPolicy(.accessory)
     }
 
     /// Returns true if this is the only instance, false if another instance is already running
