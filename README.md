@@ -38,6 +38,11 @@ A macOS menu bar app that reads selected text aloud using OpenAI's text-to-speec
 - **Translate + TTS** - Translate then read
 - **Summarize + Translate + TTS** - Full processing pipeline
 
+### Command Line Interface
+- **CLI tool** - Use Hibiki from the terminal with `hibiki --text "Hello"`
+- **Pipeline options** - Combine `--summarize` and `--translate` flags
+- **Integration** - Works with the running Hibiki app via URL scheme
+
 ### Additional Features
 - **Audio player UI** - Visual waveform display during playback
 - **History tracking** - Review and replay past TTS requests
@@ -84,6 +89,37 @@ To create a DMG file for distribution:
 ```
 
 Open the DMG and drag Hibiki to your Applications folder to install.
+
+### Install CLI tool
+
+The CLI tool is built alongside the app. Use `--install` to add it to your PATH:
+
+```bash
+# Build and install CLI to /usr/local/bin (may prompt for sudo)
+./build.sh --install
+
+# Or combine with other flags
+./build.sh --run --install
+```
+
+After installation, you can run `hibiki` from anywhere:
+
+```bash
+hibiki --text "Hello world"
+hibiki --help
+```
+
+**Manual installation alternatives:**
+
+```bash
+# Symlink to /usr/local/bin
+sudo ln -sf "$(pwd)/.build/debug/hibiki" /usr/local/bin/hibiki
+
+# Or add build directory to PATH (in ~/.zshrc or ~/.bashrc)
+export PATH="$PATH:/path/to/hibiki/.build/debug"
+```
+
+The CLI is also available inside the app bundle at `Hibiki.app/Contents/MacOS/hibiki-cli`.
 
 ### Development
 
@@ -140,6 +176,36 @@ swift run
 2. Press your configured hotkey
 3. Text is summarized, then translated, then read aloud
 
+### Command Line Interface
+
+The `hibiki` CLI allows you to use Hibiki from the terminal. The Hibiki app must be running.
+
+```bash
+# Basic text-to-speech
+hibiki --text "Hello, world!"
+
+# Summarize before speaking
+hibiki --text "Long article text here..." --summarize
+
+# Translate to another language
+hibiki --text "Hello" --translate ja
+
+# Full pipeline: summarize, translate, then speak
+hibiki --text "Long article..." --summarize --translate fr
+
+# Get help
+hibiki --help
+```
+
+**Supported languages for `--translate`:**
+- `en` - English
+- `ja` - Japanese
+- `de` - German
+- `fr` - French
+- `es` - Spanish
+
+**How it works:** The CLI sends a request to the running Hibiki app via a custom URL scheme (`hibiki://`). The app processes the text using your configured settings (voice, API key, etc.) and plays the audio through the AudioPlayerPanel. The entry is saved to history just like hotkey-triggered requests.
+
 ## Troubleshooting
 
 ### Text not being captured from Chrome/web browsers
@@ -163,31 +229,35 @@ Open Settings and click the Debug tab to see detailed logs of what Hibiki is doi
 ## Architecture
 
 ```
-Sources/Hibiki/
-├── HibikiApp.swift              # App entry point
-├── AppDelegate.swift            # Menu bar setup, window management
-├── Core/
-│   ├── AppState.swift           # Main application state
-│   ├── AccessibilityManager.swift   # Text selection via accessibility API
-│   ├── PermissionManager.swift      # Permission checking
-│   ├── DebugLogger.swift        # In-app debug logging
-│   ├── HistoryManager.swift     # TTS history tracking
-│   ├── HistoryEntry.swift       # History data model
-│   ├── LLMService.swift         # OpenAI LLM API client (summarization/translation)
-│   ├── TextChunker.swift        # Long text chunking
-│   └── UsageStatistics.swift    # Usage tracking
-├── Audio/
-│   ├── TTSService.swift         # OpenAI TTS API client
-│   ├── StreamingAudioPlayer.swift   # PCM audio playback
-│   └── AudioLevelMonitor.swift  # Audio level monitoring for waveform
-└── Views/
-    ├── MainSettingsView.swift   # Tabbed settings window
-    ├── MenuBarView.swift        # Menu bar popover
-    ├── AudioPlayerPanel.swift   # Audio player with waveform
-    ├── WaveformView.swift       # Waveform visualization
-    └── Tabs/
-        ├── ConfigurationTab.swift   # API key, voice, hotkeys
-        ├── DebugTab.swift           # Debug log viewer
-        ├── HistoryTab.swift         # TTS history
-        └── StatisticsTab.swift      # Usage statistics
+Sources/
+├── HibikiCLI/
+│   └── HibikiCLI.swift          # CLI executable (argument parsing, URL scheme)
+└── Hibiki/
+    ├── HibikiApp.swift              # App entry point
+    ├── AppDelegate.swift            # Menu bar setup, window management, URL handling
+    ├── Core/
+    │   ├── AppState.swift           # Main application state
+    │   ├── AccessibilityManager.swift   # Text selection via accessibility API
+    │   ├── CLIRequestHandler.swift  # Handles CLI requests via URL scheme
+    │   ├── PermissionManager.swift      # Permission checking
+    │   ├── DebugLogger.swift        # In-app debug logging
+    │   ├── HistoryManager.swift     # TTS history tracking
+    │   ├── HistoryEntry.swift       # History data model
+    │   ├── LLMService.swift         # OpenAI LLM API client (summarization/translation)
+    │   ├── TextChunker.swift        # Long text chunking
+    │   └── UsageStatistics.swift    # Usage tracking
+    ├── Audio/
+    │   ├── TTSService.swift         # OpenAI TTS API client
+    │   ├── StreamingAudioPlayer.swift   # PCM audio playback
+    │   └── AudioLevelMonitor.swift  # Audio level monitoring for waveform
+    └── Views/
+        ├── MainSettingsView.swift   # Tabbed settings window
+        ├── MenuBarView.swift        # Menu bar popover
+        ├── AudioPlayerPanel.swift   # Audio player with waveform
+        ├── WaveformView.swift       # Waveform visualization
+        └── Tabs/
+            ├── ConfigurationTab.swift   # API key, voice, hotkeys
+            ├── DebugTab.swift           # Debug log viewer
+            ├── HistoryTab.swift         # TTS history
+            └── StatisticsTab.swift      # Usage statistics
 ```

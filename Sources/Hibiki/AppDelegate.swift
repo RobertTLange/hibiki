@@ -360,6 +360,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         removeKeyboardMonitor()
     }
 
+    // MARK: - URL Scheme Handling
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            if url.scheme == "hibiki" {
+                CLIRequestHandler.shared.handle(url: url)
+            }
+        }
+    }
+
     // MARK: - NSWindowDelegate
 
     func windowWillClose(_ notification: Notification) {

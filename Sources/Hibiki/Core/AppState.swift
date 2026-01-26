@@ -1027,4 +1027,466 @@ final class AppState: ObservableObject {
         audioDataLock.unlock()
         pendingHistorySave = nil
     }
+
+    // MARK: - CLI Processing
+
+    /// Process text provided directly from CLI (bypassing AccessibilityManager)
+    /// - Parameters:
+    ///   - text: The text to process
+    ///   - shouldSummarize: Whether to summarize the text first
+    ///   - targetLanguage: Optional target language for translation
+    @MainActor
+    func processTextFromCLI(
+        text: String,
+        shouldSummarize: Bool,
+        targetLanguage: TargetLanguage?
+    ) async {
+        logger.info("processTextFromCLI called: summarize=\(shouldSummarize), translate=\(targetLanguage?.rawValue ?? "none"), text=\(text.prefix(50))...", source: "CLI")
+
+        // If already playing, stop first
+        if isPlaying {
+            logger.info("Already playing, stopping playback first", source: "CLI")
+            stopPlayback()
+        }
+
+        // Check API key
+        var effectiveApiKey = apiKey
+        if effectiveApiKey.isEmpty {
+            if let envKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"], !envKey.isEmpty {
+                effectiveApiKey = envKey
+                apiKey = envKey
+                logger.info("Loaded API key from environment variable", source: "CLI")
+            } else {
+                logger.error("API key is empty!", source: "CLI")
+                errorMessage = "No API key configured. Enter key in Settings."
+                return
+            }
+        }
+
+        let voice = TTSVoice(rawValue: selectedVoice) ?? .coral
+        let language = targetLanguage ?? .none
+
+        // Route to appropriate pipeline based on options
+        if shouldSummarize && language != .none {
+            // Summarize + Translate + TTS (interleaved pipeline)
+            await processCLISummarizeTranslateTTS(text: text, apiKey: effectiveApiKey, voice: voice, language: language)
+        } else if shouldSummarize {
+            // Summarize + TTS
+            await processCLISummarizeTTS(text: text, apiKey: effectiveApiKey, voice: voice)
+        } else if language != .none {
+            // Translate + TTS
+            await processCLITranslateTTS(text: text, apiKey: effectiveApiKey, voice: voice, language: language)
+        } else {
+            // Direct TTS
+            await processCLIDirectTTS(text: text, apiKey: effectiveApiKey, voice: voice)
+        }
+    }
+
+    /// Direct TTS from CLI (no summarization or translation)
+    @MainActor
+    private func processCLIDirectTTS(text: String, apiKey: String, voice: TTSVoice) async {
+        logger.info("CLI Direct TTS starting", source: "CLI")
+
+        isLoading = true
+        errorMessage = nil
+
+        currentText = text
+        displayText = text
+
+        // Reset tracking state
+        audioDataLock.lock()
+        accumulatedAudioData = Data()
+        audioDataLock.unlock()
+        pendingHistorySave = nil
+        historySaved = false
+
+        // Reset audio player
+        audioPlayer.reset()
+        audioPlayer.playbackSpeed = Float(playbackSpeed)
+        audioPlayer.setEstimatedDuration(forTextLength: text.count)
+
+        // Store pending history info
+        pendingHistorySave = (
+            text: text,
+            voice: voice.rawValue,
+            inputTokens: 0,
+            summarizedText: nil,
+            llmInputTokens: nil,
+            llmOutputTokens: nil,
+            llmModel: nil,
+            translatedText: nil,
+            translationInputTokens: nil,
+            translationOutputTokens: nil,
+            translationModel: nil,
+            targetLanguage: nil
+        )
+
+        // Set up playback completion callback
+        audioPlayer.onPlaybackComplete = { [weak self] in
+            self?.logger.info("Audio playback complete", source: "CLI")
+            Task { @MainActor in
+                self?.handlePlaybackComplete()
+            }
+        }
+
+        // Start playback
+        isPlaying = true
+        isLoading = false
+        audioLevelMonitor.startMonitoring(engine: audioPlayer.audioEngine)
+        startProgressTracking()
+
+        // Start streaming TTS
+        ttsService.streamSpeech(
+            text: text,
+            voice: voice,
+            apiKey: apiKey,
+            onAudioChunk: { [weak self] data in
+                guard let self = self else { return }
+                self.audioPlayer.enqueue(pcmData: data)
+                self.audioDataLock.lock()
+                self.accumulatedAudioData.append(data)
+                self.audioDataLock.unlock()
+            },
+            onComplete: { [weak self] result in
+                self?.logger.info("TTS stream complete, inputTokens: \(result.inputTokens)", source: "CLI")
+                if var pending = self?.pendingHistorySave {
+                    pending.inputTokens = result.inputTokens
+                    self?.pendingHistorySave = pending
+                }
+                self?.audioPlayer.markStreamComplete()
+            },
+            onError: { [weak self] error in
+                self?.logger.error("TTS error: \(error.localizedDescription)", source: "CLI")
+                Task { @MainActor in
+                    self?.errorMessage = error.localizedDescription
+                    self?.isLoading = false
+                    self?.isPlaying = false
+                    self?.audioLevelMonitor.stopMonitoring()
+                }
+            }
+        )
+    }
+
+    /// Summarize + TTS from CLI
+    @MainActor
+    private func processCLISummarizeTTS(text: String, apiKey: String, voice: TTSVoice) async {
+        logger.info("CLI Summarize+TTS starting", source: "CLI")
+
+        isLoading = true
+        isSummarizing = true
+        errorMessage = nil
+
+        // Reset state
+        streamingSummary = ""
+        audioDataLock.lock()
+        accumulatedAudioData = Data()
+        audioDataLock.unlock()
+        pendingHistorySave = nil
+        historySaved = false
+
+        // Reset audio player
+        audioPlayer.reset()
+        audioPlayer.playbackSpeed = Float(playbackSpeed)
+        audioPlayer.setEstimatedDuration(forTextLength: text.count / 3)
+
+        let model = LLMModel(rawValue: summarizationModel) ?? .gpt5Nano
+
+        // Configure interleaved pipeline for summarize-only
+        interleavedPipeline.onSummarySentence = { [weak self] sentence in
+            guard let self = self else { return }
+            self.streamingSummary += sentence + " "
+            self.displayText = self.streamingSummary.trimmingCharacters(in: .whitespaces)
+        }
+
+        interleavedPipeline.onTranslatedSentence = { _ in }
+
+        interleavedPipeline.onAudioChunk = { [weak self] data in
+            guard let self = self else { return }
+            self.audioPlayer.enqueue(pcmData: data)
+            self.audioDataLock.lock()
+            self.accumulatedAudioData.append(data)
+            self.audioDataLock.unlock()
+        }
+
+        interleavedPipeline.onProgress = { [weak self] status in
+            self?.logger.debug("Pipeline progress: \(status)", source: "CLI")
+        }
+
+        interleavedPipeline.onComplete = { [weak self] result in
+            guard let self = self else { return }
+            self.logger.info("Summarize pipeline complete", source: "CLI")
+
+            self.displayText = result.summarizedText
+            self.currentText = result.summarizedText
+
+            self.pendingHistorySave = (
+                text: text,
+                voice: voice.rawValue,
+                inputTokens: result.ttsInputTokens,
+                summarizedText: result.summarizedText,
+                llmInputTokens: result.summarizationInputTokens,
+                llmOutputTokens: result.summarizationOutputTokens,
+                llmModel: result.summarizationModel,
+                translatedText: nil,
+                translationInputTokens: nil,
+                translationOutputTokens: nil,
+                translationModel: nil,
+                targetLanguage: nil
+            )
+
+            self.isSummarizing = false
+            self.audioPlayer.markStreamComplete()
+        }
+
+        interleavedPipeline.onError = { [weak self] error in
+            guard let self = self else { return }
+            self.logger.error("Pipeline error: \(error.localizedDescription)", source: "CLI")
+            self.errorMessage = error.localizedDescription
+            self.isLoading = false
+            self.isPlaying = false
+            self.isSummarizing = false
+            self.audioLevelMonitor.stopMonitoring()
+        }
+
+        audioPlayer.onPlaybackComplete = { [weak self] in
+            self?.logger.info("Audio playback complete", source: "CLI")
+            Task { @MainActor in
+                self?.handlePlaybackComplete()
+            }
+        }
+
+        isPlaying = true
+        isLoading = false
+        audioLevelMonitor.startMonitoring(engine: audioPlayer.audioEngine)
+        startProgressTracking()
+
+        let config = InterleavedPipelineConfig(
+            apiKey: apiKey,
+            summarizationModel: model,
+            summarizationPrompt: summarizationPrompt,
+            targetLanguage: .none,
+            translationModel: model,
+            translationPrompt: "",
+            voice: voice,
+            ttsInstructions: "Speak naturally and clearly."
+        )
+
+        interleavedPipeline.start(text: text, config: config)
+    }
+
+    /// Translate + TTS from CLI (no summarization)
+    @MainActor
+    private func processCLITranslateTTS(text: String, apiKey: String, voice: TTSVoice, language: TargetLanguage) async {
+        logger.info("CLI Translate+TTS starting for language: \(language.rawValue)", source: "CLI")
+
+        isLoading = true
+        isTranslating = true
+        errorMessage = nil
+
+        // Reset state
+        streamingTranslation = ""
+        audioDataLock.lock()
+        accumulatedAudioData = Data()
+        audioDataLock.unlock()
+        pendingHistorySave = nil
+        historySaved = false
+
+        // Reset audio player
+        audioPlayer.reset()
+        audioPlayer.playbackSpeed = Float(playbackSpeed)
+        audioPlayer.setEstimatedDuration(forTextLength: text.count)
+
+        let translationModel = LLMModel(rawValue: translationModelSetting) ?? .gpt5Nano
+
+        // For translate-only, we use LLMService directly
+        do {
+            let translatedText = try await llmService.translateSentence(
+                sentence: text,
+                context: nil,
+                targetLanguage: language,
+                model: translationModel,
+                systemPrompt: translationPrompt(for: language),
+                apiKey: apiKey
+            )
+
+            displayText = translatedText
+            currentText = translatedText
+
+            pendingHistorySave = (
+                text: text,
+                voice: voice.rawValue,
+                inputTokens: 0,
+                summarizedText: nil,
+                llmInputTokens: nil,
+                llmOutputTokens: nil,
+                llmModel: nil,
+                translatedText: translatedText,
+                translationInputTokens: nil,
+                translationOutputTokens: nil,
+                translationModel: translationModel.rawValue,
+                targetLanguage: language.rawValue
+            )
+
+            audioPlayer.onPlaybackComplete = { [weak self] in
+                self?.logger.info("Audio playback complete", source: "CLI")
+                Task { @MainActor in
+                    self?.handlePlaybackComplete()
+                }
+            }
+
+            isPlaying = true
+            isLoading = false
+            isTranslating = false
+            audioLevelMonitor.startMonitoring(engine: audioPlayer.audioEngine)
+            startProgressTracking()
+
+            // Stream TTS for translated text
+            ttsService.streamSpeech(
+                text: translatedText,
+                voice: voice,
+                apiKey: apiKey,
+                onAudioChunk: { [weak self] data in
+                    guard let self = self else { return }
+                    self.audioPlayer.enqueue(pcmData: data)
+                    self.audioDataLock.lock()
+                    self.accumulatedAudioData.append(data)
+                    self.audioDataLock.unlock()
+                },
+                onComplete: { [weak self] result in
+                    self?.logger.info("TTS stream complete, inputTokens: \(result.inputTokens)", source: "CLI")
+                    if var pending = self?.pendingHistorySave {
+                        pending.inputTokens = result.inputTokens
+                        self?.pendingHistorySave = pending
+                    }
+                    self?.audioPlayer.markStreamComplete()
+                },
+                onError: { [weak self] error in
+                    self?.logger.error("TTS error: \(error.localizedDescription)", source: "CLI")
+                    Task { @MainActor in
+                        self?.errorMessage = error.localizedDescription
+                        self?.isLoading = false
+                        self?.isPlaying = false
+                        self?.audioLevelMonitor.stopMonitoring()
+                    }
+                }
+            )
+        } catch {
+            logger.error("Translation error: \(error.localizedDescription)", source: "CLI")
+            errorMessage = error.localizedDescription
+            isLoading = false
+            isTranslating = false
+        }
+    }
+
+    /// Summarize + Translate + TTS from CLI (full interleaved pipeline)
+    @MainActor
+    private func processCLISummarizeTranslateTTS(text: String, apiKey: String, voice: TTSVoice, language: TargetLanguage) async {
+        logger.info("CLI Summarize+Translate+TTS starting for language: \(language.rawValue)", source: "CLI")
+
+        isLoading = true
+        isTranslating = true  // Show translation UI since that's the final output
+        errorMessage = nil
+
+        // Reset state
+        streamingSummary = ""
+        streamingTranslation = ""
+        audioDataLock.lock()
+        accumulatedAudioData = Data()
+        audioDataLock.unlock()
+        pendingHistorySave = nil
+        historySaved = false
+
+        // Reset audio player
+        audioPlayer.reset()
+        audioPlayer.playbackSpeed = Float(playbackSpeed)
+        audioPlayer.setEstimatedDuration(forTextLength: text.count / 3)
+
+        let model = LLMModel(rawValue: summarizationModel) ?? .gpt5Nano
+        let translationModel = LLMModel(rawValue: translationModelSetting) ?? .gpt5Nano
+
+        // Configure interleaved pipeline callbacks
+        interleavedPipeline.onSummarySentence = { _ in }  // Don't show summary when translating
+
+        interleavedPipeline.onTranslatedSentence = { [weak self] sentence in
+            guard let self = self else { return }
+            self.streamingTranslation += sentence + " "
+            self.displayText = self.streamingTranslation.trimmingCharacters(in: .whitespaces)
+        }
+
+        interleavedPipeline.onAudioChunk = { [weak self] data in
+            guard let self = self else { return }
+            self.audioPlayer.enqueue(pcmData: data)
+            self.audioDataLock.lock()
+            self.accumulatedAudioData.append(data)
+            self.audioDataLock.unlock()
+        }
+
+        interleavedPipeline.onProgress = { [weak self] status in
+            self?.logger.debug("Pipeline progress: \(status)", source: "CLI")
+        }
+
+        interleavedPipeline.onComplete = { [weak self] result in
+            guard let self = self else { return }
+            self.logger.info("Interleaved pipeline complete", source: "CLI")
+
+            let finalText = result.translatedText ?? result.summarizedText
+            self.displayText = finalText
+            self.currentText = finalText
+
+            self.pendingHistorySave = (
+                text: text,
+                voice: voice.rawValue,
+                inputTokens: result.ttsInputTokens,
+                summarizedText: result.summarizedText,
+                llmInputTokens: result.summarizationInputTokens,
+                llmOutputTokens: result.summarizationOutputTokens,
+                llmModel: result.summarizationModel,
+                translatedText: result.translatedText,
+                translationInputTokens: result.translationInputTokens,
+                translationOutputTokens: result.translationOutputTokens,
+                translationModel: result.translationModel,
+                targetLanguage: language.rawValue
+            )
+
+            self.isSummarizing = false
+            self.isTranslating = false
+            self.audioPlayer.markStreamComplete()
+        }
+
+        interleavedPipeline.onError = { [weak self] error in
+            guard let self = self else { return }
+            self.logger.error("Pipeline error: \(error.localizedDescription)", source: "CLI")
+            self.errorMessage = error.localizedDescription
+            self.isLoading = false
+            self.isPlaying = false
+            self.isSummarizing = false
+            self.isTranslating = false
+            self.audioLevelMonitor.stopMonitoring()
+        }
+
+        audioPlayer.onPlaybackComplete = { [weak self] in
+            self?.logger.info("Audio playback complete", source: "CLI")
+            Task { @MainActor in
+                self?.handlePlaybackComplete()
+            }
+        }
+
+        isPlaying = true
+        isLoading = false
+        audioLevelMonitor.startMonitoring(engine: audioPlayer.audioEngine)
+        startProgressTracking()
+
+        let config = InterleavedPipelineConfig(
+            apiKey: apiKey,
+            summarizationModel: model,
+            summarizationPrompt: summarizationPrompt,
+            targetLanguage: language,
+            translationModel: translationModel,
+            translationPrompt: translationPrompt(for: language),
+            voice: voice,
+            ttsInstructions: "Speak naturally and clearly."
+        )
+
+        interleavedPipeline.start(text: text, config: config)
+    }
 }
