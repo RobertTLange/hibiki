@@ -1,54 +1,28 @@
 # Hibiki
 
-```                                       
- _     _ _     _ _    _              .-----------.  
-| |   (_) |   (_) |  (_)          .-'   .-----.   '-. 
-| |__  _| |__  _| | ___          /   .--'     '--.   \ 
+```
+ _     _ _     _ _    _              .-----------.
+| |   (_) |   (_) |  (_)          .-'   .-----.   '-.
+| |__  _| |__  _| | ___          /   .--'     '--.   \
 | '_ \| | '_ \| | |/ / |        /   /   .-----.   \   \
-| | | | | |_) | |   <| |       /   /   /       \   \   \ 
+| | | | | |_) | |   <| |       /   /   /       \   \   \
 |_| |_|_|_.__/|_|_|\_\_|      |   |   |   (O)   |   |   |
 ```
-
 
 A macOS menu bar app that reads selected text aloud using OpenAI's text-to-speech API, with AI-powered summarization and translation.
 
 ## Features
 
-### Text-to-Speech
-- **Global hotkey** - Select text in any application and press Option+F to hear it read aloud
-- **Streaming audio** - Audio plays as it's generated for fast response times
-- **Multiple voices** - Choose from OpenAI's TTS voices (Alloy, Echo, Fable, Onyx, Nova, Shimmer, Coral, Sage)
-- **Playback speed control** - Adjust speed from 1.0x to 2.5x during playback
-- **Text chunking** - Automatically handles long texts by splitting them into chunks
-
-### AI Summarization
-- **Summarize + TTS** - Summarize long texts with AI before reading aloud (Shift+Option+F)
-- **Customizable prompts** - Configure the summarization system prompt to your needs
-- **Model selection** - Choose between GPT-5 Nano, GPT-5 Mini, or GPT-5.2
-
-### Translation
-- **Translate + TTS** - Translate text to another language before reading aloud
-- **Multiple languages** - Supports English, Japanese, and German
-- **Customizable prompts** - Configure translation prompts with `{language}` placeholder
-- **Combined workflows** - Summarize and translate in one action
-
-### Configurable Hotkeys
-- **Trigger TTS** - Read selected text aloud (default: Option+F)
-- **Summarize + TTS** - Summarize then read (default: Shift+Option+F)
-- **Translate + TTS** - Translate then read
-- **Summarize + Translate + TTS** - Full processing pipeline
-
-### Command Line Interface
-- **CLI tool** - Use Hibiki from the terminal with `hibiki --text "Hello"`
-- **Pipeline options** - Combine `--summarize` and `--translate` flags
-- **Integration** - Works with the running Hibiki app via URL scheme
-
-### Additional Features
-- **Audio player UI** - Visual waveform display during playback
-- **History tracking** - Review and replay past TTS requests
-- **Usage statistics** - Track your API usage and costs
-- **Menu bar app** - Runs quietly in your menu bar, no dock icon
-- **Debug logging** - Built-in debug log viewer in Settings to troubleshoot issues
+| Feature | Description |
+|---------|-------------|
+| **Global Hotkeys** | Option+F for TTS, Shift+Option+F for Summarize+TTS |
+| **Streaming Audio** | Audio plays as it's generated for fast response |
+| **Multiple Voices** | Alloy, Echo, Fable, Onyx, Nova, Shimmer, Coral, Sage |
+| **AI Summarization** | Condense long texts before reading (GPT-5 Nano/Mini/5.2) |
+| **Translation** | Translate to English, Japanese, German, French, Spanish |
+| **CLI Tool** | `hibiki --text "Hello"` with `--summarize` and `--translate` flags |
+| **History & Stats** | Track past requests and API usage costs |
+| **Audio Player UI** | Visual waveform display with playback speed control (1.0x-2.5x) |
 
 ## Requirements
 
@@ -58,226 +32,71 @@ A macOS menu bar app that reads selected text aloud using OpenAI's text-to-speec
 
 ## Installation
 
-### Build from source
-
 ```bash
-# Clone the repository
-git clone <repo-url>
-cd hibiki
-
-# Build the app
-./build.sh
-
-# Optionally set OpenAI API Key
-export OPENAI_API_KEY='sk-...'
-
-# Run the app
-open .build/Hibiki.app
-
-# Or just run ./build.sh --run
+git clone <repo-url> && cd hibiki
+./build.sh --run              # Build and run
+./build.sh --install          # Install CLI to /usr/local/bin
+./build.sh --dmg              # Create DMG for distribution
 ```
 
-### Create DMG installer
+Or download the DMG, double-click to mount, and drag Hibiki to Applications.
 
-To create a DMG file for distribution:
-
-```bash
-# Build release version and create DMG
-./build.sh --dmg
-
-# The DMG will be created at .build/Hibiki.dmg
-```
-
-Open the DMG and drag Hibiki to your Applications folder to install.
-
-### Install CLI tool
-
-The CLI tool is built alongside the app. Use `--install` to add it to your PATH:
-
-```bash
-# Build and install CLI to /usr/local/bin (may prompt for sudo)
-./build.sh --install
-
-# Or combine with other flags
-./build.sh --run --install
-```
-
-After installation, you can run `hibiki` from anywhere:
-
-```bash
-hibiki --text "Hello world"
-hibiki --help
-```
-
-**Manual installation alternatives:**
-
-```bash
-# Symlink to /usr/local/bin
-sudo ln -sf "$(pwd)/.build/debug/hibiki" /usr/local/bin/hibiki
-
-# Or add build directory to PATH (in ~/.zshrc or ~/.bashrc)
-export PATH="$PATH:/path/to/hibiki/.build/debug"
-```
-
-The CLI is also available inside the app bundle at `Hibiki.app/Contents/MacOS/hibiki-cli`.
-
-### Development
-
-```bash
-# Build only
-swift build
-
-# Run directly (without .app bundle)
-swift run
-```
+The CLI is also available at `Hibiki.app/Contents/MacOS/hibiki-cli`.
 
 ## Setup
 
-1. **Launch Hibiki** - The app appears as a speaker icon in your menu bar
+1. **Launch Hibiki** — appears as speaker icon in menu bar
+2. **Grant Accessibility Permission** — Settings → follow instructions
+3. **Add OpenAI API Key** — Settings or `OPENAI_API_KEY` environment variable
+4. **Configure Hotkeys** (optional) — defaults: Option+F (TTS), Shift+Option+F (Summarize+TTS)
 
-2. **Grant Accessibility Permission**
-   - Click the menu bar icon and select "Settings..."
-   - Follow the instructions to grant Accessibility permission in System Settings
-   - You may need to restart the app after granting permission
+## CLI Usage
 
-3. **Add your OpenAI API Key**
-   - In Settings, enter your OpenAI API key
-   - Alternatively, set the `OPENAI_API_KEY` environment variable
-
-4. **Configure Hotkeys** (optional)
-   - The default TTS hotkey is Option+F
-   - The default Summarize+TTS hotkey is Shift+Option+F
-   - You can customize all hotkeys in Settings
-
-5. **Configure Translation** (optional)
-   - Select a target language in Settings (English, Japanese, German)
-   - Customize the translation model and prompt as needed
-
-## Usage
-
-### Basic TTS
-1. Select text in any application (Chrome, Safari, Notes, etc.)
-2. Press Option+F (or your configured hotkey)
-3. Listen to the text being read aloud
-4. Press Option to stop playback
-
-### Summarize + TTS
-1. Select text in any application
-2. Press Shift+Option+F
-3. Watch the streaming summarization, then listen to the summary
-
-### Translate + TTS
-1. Select text in any application
-2. Press your configured Translate+TTS hotkey
-3. Listen to the translation being read aloud
-
-### Combined Summarize + Translate + TTS
-1. Select text in any application
-2. Press your configured hotkey
-3. Text is summarized, then translated, then read aloud
-
-### Command Line Interface
-
-The `hibiki` CLI allows you to use Hibiki from the terminal. The Hibiki app must be running.
+The Hibiki app must be running. Use hotkeys (Option+F, Shift+Option+F) for GUI-based TTS.
 
 ```bash
-# Basic text-to-speech
-hibiki --text "Hello, world!"
-
-# Summarize before speaking
-hibiki --text "Long article text here..." --summarize
-
-# Translate to another language
-hibiki --text "Hello" --translate ja
-
-# Full pipeline: summarize, translate, then speak
-hibiki --text "Long article..." --summarize --translate fr
-
-# Get help
-hibiki --help
+hibiki --text "Hello, world!"                        # Basic TTS
+hibiki --text "Long article..." --summarize          # Summarize + TTS
+hibiki --text "Hello" --translate ja                 # Translate + TTS
+hibiki --text "Article..." --summarize --translate fr # Full pipeline
 ```
 
-**Supported languages for `--translate`:**
-- `en` - English
-- `ja` - Japanese
-- `de` - German
-- `fr` - French
-- `es` - Spanish
+**Languages:** `en` (English), `ja` (Japanese), `de` (German), `fr` (French), `es` (Spanish)
 
-**How it works:** The CLI sends a request to the running Hibiki app via a custom URL scheme (`hibiki://`). The app processes the text using your configured settings (voice, API key, etc.) and plays the audio through the AudioPlayerPanel. The entry is saved to history just like hotkey-triggered requests.
+## Claude Code Integration
 
-### Claude Code Hook Integration
+See the `claude/` directory for integration files.
 
-Hibiki can be used as a [Claude Code hook](https://docs.anthropic.com/en/docs/claude-code/hooks) to speak Claude's responses aloud. For example, configure a `Stop` hook to read the final assistant message when a session ends.
+### Skill
 
-**1. Create the hook script** (`~/.claude/hooks/speak-summary.sh`):
+Add Hibiki as a Claude Code skill so Claude can speak text aloud:
 
 ```bash
-#!/bin/bash
-input=$(cat)
-transcript_path=$(echo "$input" | jq -r '.transcript_path' | sed "s|^~|$HOME|")
-
-if [[ ! -f "$transcript_path" ]]; then
-    exit 1
-fi
-
-# Extract the last assistant message (up to 500 chars)
-last_message=""
-while IFS= read -r line; do
-    msg_type=$(echo "$line" | jq -r '.type // empty' 2>/dev/null)
-    if [[ "$msg_type" == "assistant" ]]; then
-        last_message=$(echo "$line" | jq -r '.message.content[] | select(.type == "text") | .text' 2>/dev/null | head -c 500)
-    fi
-done < "$transcript_path"
-
-if [[ -n "$last_message" ]]; then
-    hibiki --text "$last_message" &
-fi
+mkdir -p ~/.claude/skills/tts-hibiki
+cp claude/SKILL.md ~/.claude/skills/tts-hibiki/SKILL.md
 ```
 
-Make it executable: `chmod +x ~/.claude/hooks/speak-summary.sh`
+### Hook
 
-**2. Configure the hook** in your Claude Code settings (`~/.claude/settings.json` or project `.claude/settings.json`):
+Automatically speak Claude's final response when a session ends:
 
-```json
-{
-  "hooks": {
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/hooks/speak-summary.sh"
-          }
-        ]
-      }
-    ]
-  }
-}
+```bash
+cp claude/speak-summary.sh ~/.claude/hooks/
+chmod +x ~/.claude/hooks/speak-summary.sh
 ```
 
-Now when you exit Claude Code, Hibiki will read Claude's final response aloud.
+Then merge `claude/hooks.json` into your `~/.claude/settings.json`.
 
 ## Troubleshooting
 
-### Text not being captured from Chrome/web browsers
+| Issue | Solution |
+|-------|----------|
+| "No text selected" | Ensure text is selected before pressing hotkey |
+| "Accessibility permission not granted" | Grant permission in System Settings |
+| "No API key configured" | Add key in Settings or set `OPENAI_API_KEY` |
+| Chrome not capturing text | Hibiki auto-falls back to clipboard (Cmd+C) |
 
-Some applications (like Chrome) don't properly expose selected text via the accessibility API. Hibiki automatically falls back to using the clipboard method (simulating Cmd+C) when this happens.
-
-### Debug Logs
-
-Open Settings and click the Debug tab to see detailed logs of what Hibiki is doing. This can help diagnose issues with:
-- Accessibility permissions
-- Text selection detection
-- API connectivity
-- Audio playback
-
-### Common Issues
-
-- **"No text selected"** - Make sure text is actually selected in the target app before pressing the hotkey
-- **"Accessibility permission not granted"** - Follow the setup instructions to grant permission in System Settings
-- **"No API key configured"** - Add your OpenAI API key in Settings or set the `OPENAI_API_KEY` environment variable
+Debug logs available in Settings → Debug tab.
 
 ## Architecture
 
