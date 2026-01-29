@@ -59,11 +59,24 @@ final class StreamingAudioPlayer {
     }
 
     /// Current playback progress as a value from 0.0 to 1.0
-    /// Uses time-based estimation to avoid jumpiness from streaming audio
+    /// Uses time-based estimation while streaming, then switches to sample-accurate progress once complete
     var currentPlaybackProgress: Double {
+        guard hasStartedPlayback, !isStopping else {
+            return 0.0
+        }
+
+        // Once the stream is complete, prefer sample-accurate progress based on the audio length.
+        if isStreamFinished,
+           totalScheduledSamples > 0,
+           let nodeTime = playerNode.lastRenderTime,
+           let playerTime = playerNode.playerTime(forNodeTime: nodeTime) {
+            let playedSamples = Double(playerTime.sampleTime)
+            let progress = playedSamples / Double(totalScheduledSamples)
+            return min(1.0, max(0.0, progress))
+        }
+
         guard let startTime = playbackStartTime,
-              estimatedTotalDuration > 0,
-              hasStartedPlayback, !isStopping else {
+              estimatedTotalDuration > 0 else {
             return 0.0
         }
 
@@ -282,6 +295,9 @@ final class StreamingAudioPlayer {
                 self.startPlayback()
             }
             self.isStreamFinished = true
+            if self.totalScheduledSamples > 0 {
+                self.estimatedTotalDuration = Double(self.totalScheduledSamples) / self.pcmFormat.sampleRate
+            }
             self.checkPlaybackComplete()
         }
     }

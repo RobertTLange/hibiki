@@ -416,14 +416,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         // Within cooldown period - ignore Option-only stop
                         return
                     }
-                    DispatchQueue.main.async {
+                    Task { @MainActor in
                         AppState.shared.stopPlayback()
                     }
                 }
             }
             // Check for Escape key (cancel)
             else if event.type == .keyDown && event.keyCode == 53 {
-                DispatchQueue.main.async {
+                Task { @MainActor in
                     AppState.shared.stopPlayback()
                 }
             }

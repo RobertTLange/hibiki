@@ -149,31 +149,16 @@ struct AudioPlayerPanel: View {
                 }
             } else if appState.isPlaying && !appState.displayText.isEmpty {
                 // Highlighted text during TTS playback (direct TTS, or after summarization/translation)
-                ScrollViewReader { proxy in
-                    ScrollView(.vertical, showsIndicators: true) {
-                        HighlightedTextView(
-                            text: appState.displayText,
-                            highlightIndex: appState.highlightCharacterIndex,
-                            highlightColor: highlightColorForMode
-                        )
-                        .padding(8)
-                        // Dynamic ID that changes every ~250 chars (roughly 5-6 lines) for scroll tracking
-                        .id("segment_\(appState.highlightCharacterIndex / 250)")
-                    }
-                    .frame(height: 80)
-                    .frame(maxWidth: .infinity)
-                    .background(backgroundColorForMode)
-                    .cornerRadius(6)
-                    .padding(.horizontal, 12)
-                    .onChange(of: appState.highlightCharacterIndex / 250) { oldSegment, newSegment in
-                        // Only scroll when segment changes (not on every character)
-                        if newSegment != oldSegment {
-                            withAnimation(.easeInOut(duration: 0.6)) {
-                                proxy.scrollTo("segment_\(newSegment)", anchor: .center)
-                            }
-                        }
-                    }
-                }
+                HighlightedTextView(
+                    text: appState.displayText,
+                    highlightIndex: appState.highlightCharacterIndex,
+                    highlightColor: highlightColorForMode
+                )
+                .frame(height: 80)
+                .frame(maxWidth: .infinity)
+                .background(backgroundColorForMode)
+                .cornerRadius(6)
+                .padding(.horizontal, 12)
             }
 
             // Speed control row

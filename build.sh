@@ -25,6 +25,8 @@ else
 fi
 
 APP_DIR=".build/Hibiki.app"
+# Ensure a clean app bundle so read-only resource files don't block rebuilds.
+rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 
@@ -53,9 +55,10 @@ rm -rf "$ICONSET_DIR"
 
 # Copy resource bundles (for runtime resources)
 BUILD_DIR=$(dirname "$EXECUTABLE")
-if [ -d "$BUILD_DIR/Hibiki_Hibiki.bundle" ]; then
-    cp -R "$BUILD_DIR/Hibiki_Hibiki.bundle" "$APP_DIR/Contents/Resources/"
-fi
+for bundle in "$BUILD_DIR"/*.bundle; do
+    [ -e "$bundle" ] || continue
+    cp -R "$bundle" "$APP_DIR/Contents/Resources/"
+done
 
 # Create Info.plist
 cat > "$APP_DIR/Contents/Info.plist" << 'EOF'
