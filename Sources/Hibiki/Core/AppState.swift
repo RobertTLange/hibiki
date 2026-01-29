@@ -448,11 +448,12 @@ final class AppState: ObservableObject {
 
             logger.info("Summarization complete: \(llmResult.summarizedText.count) chars, \(llmResult.inputTokens) input tokens, \(llmResult.outputTokens) output tokens", source: "AppState")
 
-            isSummarizing = false
-
             // Now proceed with TTS using summarized text
             currentText = llmResult.summarizedText
+            // Set isPlaying before clearing isSummarizing to avoid a gap where
+            // all activity flags are false simultaneously (which would hide the panel)
             isPlaying = true
+            isSummarizing = false
             isLoading = false
 
             // Reset tracking state
@@ -612,12 +613,14 @@ final class AppState: ObservableObject {
 
                 logger.info("Translation complete: \(translationResult!.translatedText.count) chars", source: "AppState")
                 textForTTS = translationResult!.translatedText
-                isTranslating = false
             }
 
             // Now proceed with TTS
             currentText = textForTTS
+            // Set isPlaying before clearing isTranslating to avoid a gap where
+            // all activity flags are false simultaneously (which would hide the panel)
             isPlaying = true
+            isTranslating = false
             isLoading = false
 
             // Reset tracking state
