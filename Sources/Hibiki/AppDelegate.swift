@@ -9,9 +9,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var menu: NSMenu!
     private var mainWindow: NSWindow?
     private var audioPlayerPanel: NSPanel?
-    private var playingObserver: AnyCancellable?
-    private var summarizingObserver: AnyCancellable?
-    private var translatingObserver: AnyCancellable?
+    private var panelVisibilityObserver: AnyCancellable?
     private var collapsedObserver: AnyCancellable?
     private var keyboardMonitor: Any?
     private var lastHotkeyTime: Date?
@@ -47,35 +45,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Check if CLI should be offered for installation
         checkCLIInstallation()
 
-        // Observe playing state to show/hide audio player panel
-        playingObserver = AppState.shared.$isPlaying
+        // Observe all activity flags together to show/hide audio player panel.
+        // Using CombineLatest3 ensures we evaluate all three flags atomically,
+        // preventing the panel from vanishing during state transitions
+        // (e.g., isSummarizing goes false before isPlaying goes true).
+        panelVisibilityObserver = AppState.shared.$isPlaying
+            .combineLatest(AppState.shared.$isSummarizing, AppState.shared.$isTranslating)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] isPlaying in
-                if isPlaying {
+            .sink { [weak self] isPlaying, isSummarizing, isTranslating in
+                if isPlaying || isSummarizing || isTranslating {
                     self?.showAudioPlayerPanel()
-                } else if !AppState.shared.isSummarizing && !AppState.shared.isTranslating {
-                    self?.hideAudioPlayerPanel()
-                }
-            }
-        
-        // Also observe summarizing state to show panel during LLM streaming
-        summarizingObserver = AppState.shared.$isSummarizing
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] isSummarizing in
-                if isSummarizing {
-                    self?.showAudioPlayerPanel()
-                } else if !AppState.shared.isPlaying && !AppState.shared.isTranslating {
-                    self?.hideAudioPlayerPanel()
-                }
-            }
-
-        // Also observe translating state to show panel during translation
-        translatingObserver = AppState.shared.$isTranslating
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] isTranslating in
-                if isTranslating {
-                    self?.showAudioPlayerPanel()
-                } else if !AppState.shared.isPlaying && !AppState.shared.isSummarizing {
+                } else {
                     self?.hideAudioPlayerPanel()
                 }
             }
