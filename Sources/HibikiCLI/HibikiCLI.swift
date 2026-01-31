@@ -1,6 +1,7 @@
 import ArgumentParser
 import AppKit
 import Foundation
+import HibikiCLICore
 
 /// CLI tool for Hibiki TTS
 /// Opens a URL scheme to communicate with the running Hibiki app
@@ -18,6 +19,7 @@ struct HibikiCLI: ParsableCommand {
               hibiki --text "Long article..." --summarize
               hibiki --text "Hello" --translate ja
               hibiki --text "Article..." --summarize --translate fr
+              hibiki --text "Article..." --summarize --prompt "Summarize in 3 bullet points."
             """
     )
 
@@ -27,48 +29,28 @@ struct HibikiCLI: ParsableCommand {
     @Flag(name: .long, help: "Summarize the text before speaking")
     var summarize: Bool = false
 
+    @Option(name: .long, help: "Custom summarization prompt (requires --summarize)")
+    var prompt: String?
+
     @Option(name: .long, help: "Target language for translation (en, fr, de, ja, es)")
     var translate: String?
 
     mutating func validate() throws {
-        // Validate text is not empty
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw ValidationError("Text cannot be empty")
-        }
-
-        // Validate language code if provided
-        if let lang = translate {
-            let validLanguages = ["en", "fr", "de", "ja", "es"]
-            guard validLanguages.contains(lang.lowercased()) else {
-                throw ValidationError("Invalid language code '\(lang)'. Use: en, fr, de, ja, es")
-            }
+        let request = CLIRequest(text: text, summarize: summarize, translate: translate, prompt: prompt)
+        do {
+            try request.validate()
+        } catch let error as CLIRequestError {
+            throw ValidationError(error.userMessage)
         }
     }
 
     func run() throws {
-        // Build URL components
-        var components = URLComponents()
-        components.scheme = "hibiki"
-        components.host = "speak"
-
-        var queryItems: [URLQueryItem] = []
-
-        // Add text parameter
-        queryItems.append(URLQueryItem(name: "text", value: text))
-
-        // Add summarize flag if set
-        if summarize {
-            queryItems.append(URLQueryItem(name: "summarize", value: "true"))
-        }
-
-        // Add translate parameter if set
-        if let lang = translate {
-            queryItems.append(URLQueryItem(name: "translate", value: lang.lowercased()))
-        }
-
-        components.queryItems = queryItems
-
-        guard let url = components.url else {
+        let request = CLIRequest(text: text, summarize: summarize, translate: translate, prompt: prompt)
+        let url: URL
+        do {
+            url = try request.url()
+        } catch let error as CLIRequestError {
+            fputs("Error: \(error.userMessage)\n", stderr)
             throw ExitCode.failure
         }
 

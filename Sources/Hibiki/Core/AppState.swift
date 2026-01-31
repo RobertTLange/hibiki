@@ -1059,13 +1059,16 @@ final class AppState: ObservableObject {
     ///   - text: The text to process
     ///   - shouldSummarize: Whether to summarize the text first
     ///   - targetLanguage: Optional target language for translation
+    ///   - summarizationPromptOverride: Optional prompt override for summarization
     @MainActor
     func processTextFromCLI(
         text: String,
         shouldSummarize: Bool,
-        targetLanguage: TargetLanguage?
+        targetLanguage: TargetLanguage?,
+        summarizationPromptOverride: String?
     ) async {
-        logger.info("processTextFromCLI called: summarize=\(shouldSummarize), translate=\(targetLanguage?.rawValue ?? "none"), text=\(text.prefix(50))...", source: "CLI")
+        let promptLabel = summarizationPromptOverride == nil ? "default" : "custom"
+        logger.info("processTextFromCLI called: summarize=\(shouldSummarize), prompt=\(promptLabel), translate=\(targetLanguage?.rawValue ?? "none"), text=\(text.prefix(50))...", source: "CLI")
 
         // If already playing, stop first
         if isPlaying {
@@ -1089,14 +1092,30 @@ final class AppState: ObservableObject {
 
         let voice = TTSVoice(rawValue: selectedVoice) ?? .coral
         let language = targetLanguage ?? .none
+        let summarizationPromptToUse = summarizationPromptOverride ?? summarizationPrompt
+
+        if summarizationPromptOverride != nil && !shouldSummarize {
+            logger.warning("CLI prompt override ignored because summarize=false", source: "CLI")
+        }
 
         // Route to appropriate pipeline based on options
         if shouldSummarize && language != .none {
             // Summarize + Translate + TTS (interleaved pipeline)
-            await processCLISummarizeTranslateTTS(text: text, apiKey: effectiveApiKey, voice: voice, language: language)
+            await processCLISummarizeTranslateTTS(
+                text: text,
+                apiKey: effectiveApiKey,
+                voice: voice,
+                language: language,
+                summarizationPrompt: summarizationPromptToUse
+            )
         } else if shouldSummarize {
             // Summarize + TTS
-            await processCLISummarizeTTS(text: text, apiKey: effectiveApiKey, voice: voice)
+            await processCLISummarizeTTS(
+                text: text,
+                apiKey: effectiveApiKey,
+                voice: voice,
+                summarizationPrompt: summarizationPromptToUse
+            )
         } else if language != .none {
             // Translate + TTS
             await processCLITranslateTTS(text: text, apiKey: effectiveApiKey, voice: voice, language: language)
@@ -1191,7 +1210,12 @@ final class AppState: ObservableObject {
 
     /// Summarize + TTS from CLI
     @MainActor
-    private func processCLISummarizeTTS(text: String, apiKey: String, voice: TTSVoice) async {
+    private func processCLISummarizeTTS(
+        text: String,
+        apiKey: String,
+        voice: TTSVoice,
+        summarizationPrompt: String
+    ) async {
         logger.info("CLI Summarize+TTS starting", source: "CLI")
 
         isLoading = true
@@ -1398,7 +1422,13 @@ final class AppState: ObservableObject {
 
     /// Summarize + Translate + TTS from CLI (full interleaved pipeline)
     @MainActor
-    private func processCLISummarizeTranslateTTS(text: String, apiKey: String, voice: TTSVoice, language: TargetLanguage) async {
+    private func processCLISummarizeTranslateTTS(
+        text: String,
+        apiKey: String,
+        voice: TTSVoice,
+        language: TargetLanguage,
+        summarizationPrompt: String
+    ) async {
         logger.info("CLI Summarize+Translate+TTS starting for language: \(language.rawValue)", source: "CLI")
 
         isLoading = true
