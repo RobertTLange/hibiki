@@ -63,10 +63,11 @@ hibiki --text "Article..." --summarize --translate fr # Full pipeline
 ```
 
 **Languages:** `en` (English), `ja` (Japanese), `de` (German), `fr` (French), `es` (Spanish)
+**Prompt override:** `--prompt` replaces the default summarization prompt (requires `--summarize`).
 
 ## Claude Code Integration
 
-See the `claude/` directory for integration files.
+See the `agents/` directory for integration files.
 
 ### Skill
 
@@ -74,7 +75,7 @@ Add Hibiki as a Claude Code skill so Claude can speak text aloud:
 
 ```bash
 mkdir -p ~/.claude/skills/tts-hibiki
-cp claude/SKILL.md ~/.claude/skills/tts-hibiki/SKILL.md
+cp agents/SKILL.md ~/.claude/skills/tts-hibiki/SKILL.md
 ```
 
 ### Hook
@@ -82,11 +83,11 @@ cp claude/SKILL.md ~/.claude/skills/tts-hibiki/SKILL.md
 Automatically speak Claude's final response when a session ends:
 
 ```bash
-cp claude/speak-summary.sh ~/.claude/hooks/
+cp agents/speak-summary.sh ~/.claude/hooks/
 chmod +x ~/.claude/hooks/speak-summary.sh
 ```
 
-Then merge `claude/hooks.json` into your `~/.claude/settings.json`.
+Then merge `agents/hooks.json` into your `~/.claude/settings.json`.
 
 ## Troubleshooting
 

@@ -30,6 +30,13 @@ hibiki --text "Long article or document text here..." --summarize
 ```
 Summarizes the text using an LLM, then speaks the summary aloud. Useful for long content.
 
+### Summarize + TTS (Custom Prompt)
+```bash
+hibiki --text "Long article..." --summarize --prompt "Concise: 3 bullets, no fluff."
+hibiki --text "Design doc..." --summarize --prompt "Thorough: goals, decisions, tradeoffs, risks, next steps."
+```
+Overrides the default summarization prompt (requires `--summarize`).
+
 ### Translate + TTS
 ```bash
 hibiki --text "Hello" --translate ja
@@ -67,6 +74,16 @@ hibiki --text "The paragraph content here"
 **User asks:** "Summarize this article and read it to me"
 ```bash
 hibiki --text "Full article content..." --summarize
+```
+
+**User asks:** "Give me a concise summary and read it"
+```bash
+hibiki --text "Full article content..." --summarize --prompt "Concise: 2 bullets."
+```
+
+**User asks:** "Give me a thorough summary and read it"
+```bash
+hibiki --text "Full article content..." --summarize --prompt "Thorough: key points, evidence, caveats, next steps."
 ```
 
 **User asks:** "Translate this to Japanese and speak it"

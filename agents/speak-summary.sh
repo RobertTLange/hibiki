@@ -32,9 +32,10 @@ echo "Last message length: ${#last_message}" >> "$LOG"
 echo "Last message (first 100 chars): ${last_message:0:100}" >> "$LOG"
 
 if [[ -n "$last_message" ]]; then
+    summary_prompt="Very concise summary of coding agent activity. 1-2 short sentences. Mention key changes and files."
     if [[ ${#last_message} -gt 500 ]]; then
         echo "Message > 500 chars, using --summarize" >> "$LOG"
-        hibiki --text "$last_message" --summarize >> "$LOG" 2>&1 &
+        hibiki --text "$last_message" --summarize --prompt "$summary_prompt" >> "$LOG" 2>&1 &
     else
         echo "Calling hibiki..." >> "$LOG"
         hibiki --text "$last_message" >> "$LOG" 2>&1 &
