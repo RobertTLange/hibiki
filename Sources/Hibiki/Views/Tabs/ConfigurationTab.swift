@@ -350,11 +350,7 @@ struct ConfigurationTab: View {
                             }
 
                             Button("Reset to Default") {
-                                appState.summarizationPrompt = """
-                                    Summarize the following text concisely while preserving the key information. \
-                                    The summary should be suitable for text-to-speech, so write in complete sentences \
-                                    and avoid bullet points or special formatting. Keep it under 3 paragraphs.
-                                    """
+                                appState.summarizationPrompt = AppState.defaultSummarizationPrompt
                             }
                             .controlSize(.small)
 

@@ -24,6 +24,25 @@ enum PanelPosition: String, CaseIterable, Identifiable {
 
 final class AppState: ObservableObject {
     static let shared = AppState()
+    static let defaultSummarizationPrompt = """
+        Summarize the following text in an ultra-concise, dense summary that captures only the essential facts. \
+        Omit examples, tangents, filler, and secondary details. The summary should be suitable for text-to-speech, \
+        so write in complete sentences and avoid bullet points or special formatting. Remove any links, URLs, or emojis. \
+        Aim for 3–5 sentences and no more than 2 short paragraphs.
+        """
+    private static let legacySummarizationPrompts: [String] = [
+        """
+        Summarize the following text concisely while preserving the key information. \
+        The summary should be suitable for text-to-speech, so write in complete sentences \
+        and avoid bullet points or special formatting. Keep it under 3 paragraphs.
+        """,
+        """
+        Summarize the following text in a concise, dense summary while preserving the key information. \
+        The summary should be suitable for text-to-speech, so write in complete sentences \
+        and avoid bullet points or special formatting. Remove any links, URLs, or emojis. \
+        Keep it under 3 paragraphs.
+        """
+    ]
 
     @Published var isPlaying = false
     @Published var isLoading = false
@@ -58,11 +77,7 @@ final class AppState: ObservableObject {
 
     // Summarization settings
     @AppStorage("summarizationModel") var summarizationModel: String = LLMModel.gpt5Nano.rawValue
-    @AppStorage("summarizationPrompt") var summarizationPrompt: String = """
-        Summarize the following text concisely while preserving the key information. \
-        The summary should be suitable for text-to-speech, so write in complete sentences \
-        and avoid bullet points or special formatting. Keep it under 3 paragraphs.
-        """
+    @AppStorage("summarizationPrompt") var summarizationPrompt: String = AppState.defaultSummarizationPrompt
 
     // Translation settings
     @AppStorage("targetLanguage") var targetLanguage: String = TargetLanguage.none.rawValue
@@ -129,7 +144,6 @@ final class AppState: ObservableObject {
     private var lastHighlightIndex: Int = 0  // For smoothing highlight movement
 
     // Track state for history save on stop
-    private let audioDataLock = NSLock()
     private var accumulatedAudioData = Data()
     private var pendingHistorySave: (
         text: String,
@@ -147,7 +161,26 @@ final class AppState: ObservableObject {
     )?
     private var historySaved = false
 
+    @MainActor
+    private func resetAccumulatedAudioData() {
+        accumulatedAudioData = Data()
+    }
+
+    @MainActor
+    private func appendAccumulatedAudioData(_ dataChunk: Data) {
+        accumulatedAudioData.append(dataChunk)
+    }
+
+    @MainActor
+    private func takeAccumulatedAudioSnapshot() -> Data {
+        guard !accumulatedAudioData.isEmpty else { return Data() }
+        let snapshot = accumulatedAudioData
+        accumulatedAudioData = Data()
+        return snapshot
+    }
+
     init() {
+        migrateSummarizationPromptIfNeeded()
         // Default API key from environment variable if not set
         if apiKey.isEmpty, let envKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] {
             apiKey = envKey
@@ -155,6 +188,17 @@ final class AppState: ObservableObject {
         }
         setupHotkeyHandler()
         logger.info("AppState initialized, hotkey handler registered", source: "AppState")
+    }
+
+    private func migrateSummarizationPromptIfNeeded() {
+        let normalized = summarizationPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isLegacy = Self.legacySummarizationPrompts.contains {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines) == normalized
+        }
+        if isLegacy {
+            summarizationPrompt = Self.defaultSummarizationPrompt
+            logger.info("Updated legacy summarization prompt to latest default", source: "AppState")
+        }
     }
 
     private func setupHotkeyHandler() {
@@ -249,9 +293,7 @@ final class AppState: ObservableObject {
             isLoading = false
 
             // Reset tracking state
-            audioDataLock.lock()
-            accumulatedAudioData = Data()
-            audioDataLock.unlock()
+            resetAccumulatedAudioData()
             pendingHistorySave = nil
             historySaved = false
 
@@ -304,9 +346,9 @@ final class AppState: ObservableObject {
                 onAudioChunk: { [weak self] data in
                     guard let self = self else { return }
                     self.audioPlayer.enqueue(pcmData: data)
-                    self.audioDataLock.lock()
-                    self.accumulatedAudioData.append(data)
-                    self.audioDataLock.unlock()
+                    Task { @MainActor in
+                        self.appendAccumulatedAudioData(data)
+                    }
                 },
                 onComplete: { [weak self] result in
                     self?.logger.info("TTS stream complete, audio size: \(result.audioData.count) bytes, inputTokens: \(result.inputTokens)", source: "AppState")
@@ -406,17 +448,16 @@ final class AppState: ObservableObject {
 
             logger.info("Summarization complete: \(llmResult.summarizedText.count) chars, \(llmResult.inputTokens) input tokens, \(llmResult.outputTokens) output tokens", source: "AppState")
 
-            isSummarizing = false
-
             // Now proceed with TTS using summarized text
             currentText = llmResult.summarizedText
+            // Set isPlaying before clearing isSummarizing to avoid a gap where
+            // all activity flags are false simultaneously (which would hide the panel)
             isPlaying = true
+            isSummarizing = false
             isLoading = false
 
             // Reset tracking state
-            audioDataLock.lock()
-            accumulatedAudioData = Data()
-            audioDataLock.unlock()
+            resetAccumulatedAudioData()
             pendingHistorySave = nil
             historySaved = false
 
@@ -466,9 +507,9 @@ final class AppState: ObservableObject {
                 onAudioChunk: { [weak self] data in
                     guard let self = self else { return }
                     self.audioPlayer.enqueue(pcmData: data)
-                    self.audioDataLock.lock()
-                    self.accumulatedAudioData.append(data)
-                    self.audioDataLock.unlock()
+                    Task { @MainActor in
+                        self.appendAccumulatedAudioData(data)
+                    }
                 },
                 onComplete: { [weak self] result in
                     self?.logger.info("TTS stream complete, audio size: \(result.audioData.count) bytes, inputTokens: \(result.inputTokens)", source: "AppState")
@@ -572,18 +613,18 @@ final class AppState: ObservableObject {
 
                 logger.info("Translation complete: \(translationResult!.translatedText.count) chars", source: "AppState")
                 textForTTS = translationResult!.translatedText
-                isTranslating = false
             }
 
             // Now proceed with TTS
             currentText = textForTTS
+            // Set isPlaying before clearing isTranslating to avoid a gap where
+            // all activity flags are false simultaneously (which would hide the panel)
             isPlaying = true
+            isTranslating = false
             isLoading = false
 
             // Reset tracking state
-            audioDataLock.lock()
-            accumulatedAudioData = Data()
-            audioDataLock.unlock()
+            resetAccumulatedAudioData()
             pendingHistorySave = nil
             historySaved = false
 
@@ -633,9 +674,9 @@ final class AppState: ObservableObject {
                 onAudioChunk: { [weak self] data in
                     guard let self = self else { return }
                     self.audioPlayer.enqueue(pcmData: data)
-                    self.audioDataLock.lock()
-                    self.accumulatedAudioData.append(data)
-                    self.audioDataLock.unlock()
+                    Task { @MainActor in
+                        self.appendAccumulatedAudioData(data)
+                    }
                 },
                 onComplete: { [weak self] result in
                     self?.logger.info("TTS stream complete, audio size: \(result.audioData.count) bytes, inputTokens: \(result.inputTokens)", source: "AppState")
@@ -740,9 +781,7 @@ final class AppState: ObservableObject {
             streamingTranslation = ""
 
             // Reset tracking state
-            audioDataLock.lock()
-            accumulatedAudioData = Data()
-            audioDataLock.unlock()
+            resetAccumulatedAudioData()
             pendingHistorySave = nil
             historySaved = false
 
@@ -771,9 +810,9 @@ final class AppState: ObservableObject {
             interleavedPipeline.onAudioChunk = { [weak self] data in
                 guard let self = self else { return }
                 self.audioPlayer.enqueue(pcmData: data)
-                self.audioDataLock.lock()
-                self.accumulatedAudioData.append(data)
-                self.audioDataLock.unlock()
+                Task { @MainActor in
+                    self.appendAccumulatedAudioData(data)
+                }
             }
 
             interleavedPipeline.onProgress = { [weak self] status in
@@ -917,6 +956,7 @@ final class AppState: ObservableObject {
         // Otherwise ignore small backward movements (jitter)
     }
 
+    @MainActor
     func stopPlayback() {
         logger.info("Stopping playback", source: "AppState")
 
@@ -937,13 +977,7 @@ final class AppState: ObservableObject {
         audioLevelMonitor.stopMonitoring()
 
         // Save to history if we have accumulated audio and haven't saved yet
-        var audioSnapshot = Data()
-        audioDataLock.lock()
-        if !accumulatedAudioData.isEmpty {
-            audioSnapshot = accumulatedAudioData
-            accumulatedAudioData = Data()
-        }
-        audioDataLock.unlock()
+        let audioSnapshot = takeAccumulatedAudioSnapshot()
 
         if !historySaved, let pending = pendingHistorySave, !audioSnapshot.isEmpty {
             logger.info("Saving partial audio to history (\(audioSnapshot.count) bytes)", source: "AppState")
@@ -973,9 +1007,7 @@ final class AppState: ObservableObject {
         streamingSummary = ""
         streamingTranslation = ""
         displayText = ""
-        audioDataLock.lock()
-        accumulatedAudioData = Data()
-        audioDataLock.unlock()
+        resetAccumulatedAudioData()
         pendingHistorySave = nil
     }
 
@@ -986,13 +1018,7 @@ final class AppState: ObservableObject {
         logger.info("Playback completed naturally", source: "AppState")
 
         // Save to history if not already saved
-        var audioSnapshot = Data()
-        audioDataLock.lock()
-        if !accumulatedAudioData.isEmpty {
-            audioSnapshot = accumulatedAudioData
-            accumulatedAudioData = Data()
-        }
-        audioDataLock.unlock()
+        let audioSnapshot = takeAccumulatedAudioSnapshot()
 
         if !historySaved, let pending = pendingHistorySave, !audioSnapshot.isEmpty {
             logger.info("Saving to history (\(audioSnapshot.count) bytes)", source: "AppState")
@@ -1022,9 +1048,7 @@ final class AppState: ObservableObject {
         streamingSummary = ""
         streamingTranslation = ""
         displayText = ""
-        audioDataLock.lock()
-        accumulatedAudioData = Data()
-        audioDataLock.unlock()
+        resetAccumulatedAudioData()
         pendingHistorySave = nil
     }
 
@@ -1113,9 +1137,7 @@ final class AppState: ObservableObject {
         displayText = text
 
         // Reset tracking state
-        audioDataLock.lock()
-        accumulatedAudioData = Data()
-        audioDataLock.unlock()
+        resetAccumulatedAudioData()
         pendingHistorySave = nil
         historySaved = false
 
@@ -1162,9 +1184,9 @@ final class AppState: ObservableObject {
             onAudioChunk: { [weak self] data in
                 guard let self = self else { return }
                 self.audioPlayer.enqueue(pcmData: data)
-                self.audioDataLock.lock()
-                self.accumulatedAudioData.append(data)
-                self.audioDataLock.unlock()
+                Task { @MainActor in
+                    self.appendAccumulatedAudioData(data)
+                }
             },
             onComplete: { [weak self] result in
                 self?.logger.info("TTS stream complete, inputTokens: \(result.inputTokens)", source: "CLI")
@@ -1202,9 +1224,7 @@ final class AppState: ObservableObject {
 
         // Reset state
         streamingSummary = ""
-        audioDataLock.lock()
-        accumulatedAudioData = Data()
-        audioDataLock.unlock()
+        resetAccumulatedAudioData()
         pendingHistorySave = nil
         historySaved = false
 
@@ -1227,9 +1247,9 @@ final class AppState: ObservableObject {
         interleavedPipeline.onAudioChunk = { [weak self] data in
             guard let self = self else { return }
             self.audioPlayer.enqueue(pcmData: data)
-            self.audioDataLock.lock()
-            self.accumulatedAudioData.append(data)
-            self.audioDataLock.unlock()
+            Task { @MainActor in
+                self.appendAccumulatedAudioData(data)
+            }
         }
 
         interleavedPipeline.onProgress = { [weak self] status in
@@ -1309,9 +1329,7 @@ final class AppState: ObservableObject {
 
         // Reset state
         streamingTranslation = ""
-        audioDataLock.lock()
-        accumulatedAudioData = Data()
-        audioDataLock.unlock()
+        resetAccumulatedAudioData()
         pendingHistorySave = nil
         historySaved = false
 
@@ -1372,9 +1390,9 @@ final class AppState: ObservableObject {
                 onAudioChunk: { [weak self] data in
                     guard let self = self else { return }
                     self.audioPlayer.enqueue(pcmData: data)
-                    self.audioDataLock.lock()
-                    self.accumulatedAudioData.append(data)
-                    self.audioDataLock.unlock()
+                    Task { @MainActor in
+                        self.appendAccumulatedAudioData(data)
+                    }
                 },
                 onComplete: { [weak self] result in
                     self?.logger.info("TTS stream complete, inputTokens: \(result.inputTokens)", source: "CLI")
@@ -1420,9 +1438,7 @@ final class AppState: ObservableObject {
         // Reset state
         streamingSummary = ""
         streamingTranslation = ""
-        audioDataLock.lock()
-        accumulatedAudioData = Data()
-        audioDataLock.unlock()
+        resetAccumulatedAudioData()
         pendingHistorySave = nil
         historySaved = false
 
@@ -1446,9 +1462,9 @@ final class AppState: ObservableObject {
         interleavedPipeline.onAudioChunk = { [weak self] data in
             guard let self = self else { return }
             self.audioPlayer.enqueue(pcmData: data)
-            self.audioDataLock.lock()
-            self.accumulatedAudioData.append(data)
-            self.audioDataLock.unlock()
+            Task { @MainActor in
+                self.appendAccumulatedAudioData(data)
+            }
         }
 
         interleavedPipeline.onProgress = { [weak self] status in
