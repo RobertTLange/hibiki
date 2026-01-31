@@ -25,14 +25,20 @@ let package = Package(
                 .process("Resources/Assets.xcassets")
             ]
         ),
+        .target(
+            name: "HibikiCLICore",
+            dependencies: [],
+            path: "Sources/HibikiCLICore"
+        ),
         .testTarget(
             name: "HibikiTests",
-            dependencies: [],
+            dependencies: ["HibikiCLICore"],
             path: "Tests/HibikiTests"
         ),
         .executableTarget(
             name: "hibiki",
             dependencies: [
+                "HibikiCLICore",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "Sources/HibikiCLI"

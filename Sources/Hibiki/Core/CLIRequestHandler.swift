@@ -9,7 +9,7 @@ final class CLIRequestHandler {
     private init() {}
 
     /// Handle an incoming URL request from the CLI
-    /// URL format: hibiki://speak?text=<text>&summarize=<bool>&translate=<lang>
+    /// URL format: hibiki://speak?text=<text>&summarize=<bool>&prompt=<text>&translate=<lang>
     func handle(url: URL) {
         logger.debug("CLIRequestHandler received URL: \(url.absoluteString)", source: "CLI")
 
@@ -41,6 +41,11 @@ final class CLIRequestHandler {
         // Extract summarize flag (optional, defaults to false)
         let shouldSummarize = queryItems.first(where: { $0.name == "summarize" })?.value == "true"
 
+        // Extract summarization prompt (optional)
+        let rawPrompt = queryItems.first(where: { $0.name == "prompt" })?.value
+        let trimmedPrompt = rawPrompt?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let summarizationPromptOverride = (trimmedPrompt?.isEmpty == false) ? rawPrompt : nil
+
         // Extract translate parameter (optional)
         let translateLang = queryItems.first(where: { $0.name == "translate" })?.value
         let targetLanguage: TargetLanguage?
@@ -54,7 +59,8 @@ final class CLIRequestHandler {
             targetLanguage = nil
         }
 
-        logger.info("CLI request: text=\(text.prefix(50))..., summarize=\(shouldSummarize), translate=\(translateLang ?? "none")", source: "CLI")
+        let promptLabel = summarizationPromptOverride == nil ? "default" : "custom"
+        logger.info("CLI request: text=\(text.prefix(50))..., summarize=\(shouldSummarize), prompt=\(promptLabel), translate=\(translateLang ?? "none")", source: "CLI")
 
         // Check API key
         guard !AppState.shared.apiKey.isEmpty else {
@@ -70,7 +76,8 @@ final class CLIRequestHandler {
             await AppState.shared.processTextFromCLI(
                 text: text,
                 shouldSummarize: shouldSummarize,
-                targetLanguage: targetLanguage
+                targetLanguage: targetLanguage,
+                summarizationPromptOverride: summarizationPromptOverride
             )
         }
     }

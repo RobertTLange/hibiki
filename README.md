@@ -57,6 +57,7 @@ The Hibiki app must be running. Use hotkeys (Option+F, Shift+Option+F) for GUI-b
 ```bash
 hibiki --text "Hello, world!"                        # Basic TTS
 hibiki --text "Long article..." --summarize          # Summarize + TTS
+hibiki --text "Long article..." --summarize --prompt "Summarize in 3 bullets." # Custom summary prompt
 hibiki --text "Hello" --translate ja                 # Translate + TTS
 hibiki --text "Article..." --summarize --translate fr # Full pipeline
 ```
