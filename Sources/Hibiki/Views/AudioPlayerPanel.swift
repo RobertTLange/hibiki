@@ -319,10 +319,10 @@ struct AudioPlayerPanel: View {
     private var voiceDisplayName: String {
         let provider = TTSProvider(rawValue: appState.ttsProvider) ?? .openAI
         switch provider {
-        case .openAI:
-            return "OpenAI"
-        case .elevenLabs:
-            return "ElevenLabs"
+        case .pocketLocal:
+            return "Pocket TTS"
+        default:
+            return provider.displayName
         }
     }
 
