@@ -68,8 +68,12 @@ struct HistoryEntry: Identifiable, Codable, Sendable {
         self.translationModel = translationModel
         self.targetLanguage = targetLanguage
 
-        // Calculate TTS cost
-        self.ttsCost = TTSPricing.calculateCost(inputTokens: inputTokens)
+        // Local providers are free from API billing perspective.
+        if voice.hasPrefix("pocket:") {
+            self.ttsCost = 0
+        } else {
+            self.ttsCost = TTSPricing.calculateCost(inputTokens: inputTokens)
+        }
 
         // Calculate LLM cost if applicable (summarization)
         if let llmIn = llmInputTokens, let llmOut = llmOutputTokens, let model = llmModel {
@@ -127,7 +131,13 @@ struct HistoryEntry: Identifiable, Codable, Sendable {
     }
 
     var ttsProvider: TTSProvider {
-        voice.hasPrefix("elevenlabs:") ? .elevenLabs : .openAI
+        if voice.hasPrefix("elevenlabs:") {
+            return .elevenLabs
+        }
+        if voice.hasPrefix("pocket:") {
+            return .pocketLocal
+        }
+        return .openAI
     }
 
     var ttsProviderDisplayName: String {

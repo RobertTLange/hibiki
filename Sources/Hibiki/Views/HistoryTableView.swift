@@ -48,7 +48,7 @@ struct HistoryTableView: View {
                     }
                     Text(entry.ttsProviderDisplayName)
                         .font(.system(.caption2, design: .monospaced))
-                        .foregroundColor(entry.ttsProvider == .elevenLabs ? Color(red: 0.3, green: 0.55, blue: 0.85) : .secondary)
+                        .foregroundColor(providerColor(for: entry.ttsProvider))
                 }
                 .help(typeHelp(for: entry))
             }
@@ -242,6 +242,17 @@ struct HistoryTableView: View {
             return "Direct text-to-speech"
         }
         return parts.joined(separator: " + ") + " before TTS"
+    }
+
+    private func providerColor(for provider: TTSProvider) -> Color {
+        switch provider {
+        case .openAI:
+            return .secondary
+        case .elevenLabs:
+            return Color(red: 0.3, green: 0.55, blue: 0.85)
+        case .pocketLocal:
+            return .orange
+        }
     }
 }
 

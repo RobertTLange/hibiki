@@ -15,9 +15,14 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.2.0"),
     ],
     targets: [
+        .target(
+            name: "HibikiPocketRuntime",
+            dependencies: [],
+            path: "Sources/HibikiPocketRuntime"
+        ),
         .executableTarget(
             name: "Hibiki",
-            dependencies: ["KeyboardShortcuts"],
+            dependencies: ["KeyboardShortcuts", "HibikiPocketRuntime"],
             path: "Sources/Hibiki",
             exclude: ["Resources/Info.plist"],
             resources: [
@@ -33,7 +38,7 @@ let package = Package(
         ),
         .testTarget(
             name: "HibikiTests",
-            dependencies: ["HibikiCLICore"],
+            dependencies: ["HibikiPocketRuntime", "HibikiCLICore"],
             path: "Tests/HibikiTests"
         ),
         .executableTarget(

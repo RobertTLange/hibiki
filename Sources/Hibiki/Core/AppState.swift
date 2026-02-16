@@ -1,5 +1,7 @@
 import SwiftUI
 import KeyboardShortcuts
+import NaturalLanguage
+import HibikiPocketRuntime
 
 /// Position options for the audio player panel
 enum PanelPosition: String, CaseIterable, Identifiable {
@@ -83,6 +85,16 @@ final class AppState: ObservableObject {
     @AppStorage("elevenLabsAPIKey") var elevenLabsAPIKey: String = ""
     @AppStorage("elevenLabsVoiceID") var elevenLabsVoiceID: String = "JBFqnCBsd6RMkjVDRZzb"
     @AppStorage("elevenLabsModelID") var elevenLabsModelID: String = TTSConfiguration.defaultElevenLabsModelID
+    @AppStorage("pocketBaseURL") var pocketBaseURL: String = TTSConfiguration.defaultPocketBaseURL
+    @AppStorage("pocketVoiceURL") var pocketVoiceURL: String = TTSConfiguration.defaultPocketVoiceURL
+    @AppStorage("pocketRequestTimeoutSec") var pocketRequestTimeoutSec: Double = TTSConfiguration.defaultPocketRequestTimeoutSec
+    @AppStorage("pocketManagedEnabled") var pocketManagedEnabled: Bool = false
+    @AppStorage("pocketManagedAutoStart") var pocketManagedAutoStart: Bool = true
+    @AppStorage("pocketManagedHost") var pocketManagedHost: String = "127.0.0.1"
+    @AppStorage("pocketManagedPort") var pocketManagedPort: Int = 8000
+    @AppStorage("pocketManagedVenvPath") var pocketManagedVenvPath: String = PocketTTSRuntimeManager.defaultVenvPath()
+    @AppStorage("pocketManagedVoiceURL") var pocketManagedVoiceURL: String = TTSConfiguration.defaultPocketVoiceURL
+    @AppStorage("pocketManagedLastError") var pocketManagedLastError: String = ""
     @AppStorage("playbackSpeed") var playbackSpeed: Double = 1.0
     @AppStorage("playbackVolume") var playbackVolume: Double = 1.0
     @AppStorage(HistoryManager.retentionDaysDefaultsKey) var historyRetentionDays: Int = HistoryManager.defaultRetentionDays
@@ -153,6 +165,7 @@ final class AppState: ObservableObject {
     private let llmService = LLMService()
     private let audioPlayer = StreamingAudioPlayer.shared
     private let accessibilityManager = AccessibilityManager.shared
+    let pocketRuntimeManager = PocketTTSRuntimeManager.shared
     private var summarizationTask: Task<Void, Never>?
     private var translationTask: Task<Void, Never>?
     private let interleavedPipeline = InterleavedPipeline()
@@ -181,11 +194,13 @@ final class AppState: ObservableObject {
     private enum RequestSource: String {
         case cli
         case manual
+        case settings
 
         var logSource: String {
             switch self {
             case .cli: return "CLI"
             case .manual: return "Manual"
+            case .settings: return "Settings"
             }
         }
     }
@@ -196,6 +211,7 @@ final class AppState: ObservableObject {
         let shouldSummarize: Bool
         let targetLanguage: TargetLanguage?
         let summarizationPromptOverride: String?
+        let ttsConfigurationOverride: TTSConfiguration?
     }
     private var requestQueue: [QueuedRequest] = []
     private var activeRequest: QueuedRequest?
@@ -229,14 +245,16 @@ final class AppState: ObservableObject {
         text: String,
         shouldSummarize: Bool,
         targetLanguage: TargetLanguage?,
-        summarizationPromptOverride: String?
+        summarizationPromptOverride: String?,
+        ttsConfigurationOverride: TTSConfiguration? = nil
     ) {
         let request = QueuedRequest(
             source: source,
             text: text,
             shouldSummarize: shouldSummarize,
             targetLanguage: targetLanguage,
-            summarizationPromptOverride: summarizationPromptOverride
+            summarizationPromptOverride: summarizationPromptOverride,
+            ttsConfigurationOverride: ttsConfigurationOverride
         )
         requestQueue.append(request)
         syncRequestQueueState()
@@ -310,6 +328,15 @@ final class AppState: ObservableObject {
             elevenLabsAPIKey = envKey
             logger.info("Loaded ElevenLabs API key from ELEVENLABS_API_KEY", source: "AppState")
         }
+        if pocketBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let envBaseURL = ProcessInfo.processInfo.environment["POCKET_TTS_BASE_URL"],
+           !envBaseURL.isEmpty {
+            pocketBaseURL = envBaseURL
+            logger.info("Loaded Pocket TTS base URL from POCKET_TTS_BASE_URL", source: "AppState")
+        }
+        if pocketManagedVenvPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            pocketManagedVenvPath = PocketTTSRuntimeManager.defaultVenvPath()
+        }
         let clampedVolume = min(Self.maxPlaybackVolume, max(0.0, playbackVolume))
         if clampedVolume != playbackVolume {
             playbackVolume = clampedVolume
@@ -317,6 +344,14 @@ final class AppState: ObservableObject {
         audioPlayer.playbackVolume = Float(clampedVolume)
         setupHotkeyHandler()
         logger.info("AppState initialized, hotkey handler registered", source: "AppState")
+
+        if pocketManagedEnabled,
+           pocketManagedAutoStart,
+           activeTTSProvider() == .pocketLocal {
+            Task { @MainActor [weak self] in
+                await self?.ensurePocketRuntimeStarted(logSource: "AppState")
+            }
+        }
     }
 
     private func migrateSummarizationPromptIfNeeded() {
@@ -366,6 +401,39 @@ final class AppState: ObservableObject {
         return nil
     }
 
+    private func managedPocketBaseURL() -> String {
+        PocketTTSRuntimeManager.baseURL(host: pocketManagedHost, port: pocketManagedPort)
+    }
+
+    private func effectivePocketVoice() -> String {
+        let managedVoice = pocketManagedVoiceURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if pocketManagedEnabled, !managedVoice.isEmpty {
+            return managedVoice
+        }
+        let configuredVoice = pocketVoiceURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        return configuredVoice.isEmpty ? TTSConfiguration.defaultPocketVoiceURL : configuredVoice
+    }
+
+    private func resolvePocketBaseURL(logSource: String) -> String? {
+        if pocketManagedEnabled {
+            return managedPocketBaseURL()
+        }
+
+        let configuredBaseURL = pocketBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !configuredBaseURL.isEmpty {
+            return configuredBaseURL
+        }
+
+        if let envURL = ProcessInfo.processInfo.environment["POCKET_TTS_BASE_URL"],
+           !envURL.isEmpty {
+            pocketBaseURL = envURL
+            logger.info("Loaded Pocket base URL from POCKET_TTS_BASE_URL", source: logSource)
+            return envURL
+        }
+
+        return nil
+    }
+
     private func resolveTTSConfiguration(logSource: String, openAIAPIKeyOverride: String? = nil) -> TTSConfiguration? {
         let provider = activeTTSProvider()
         let openAIVoice = TTSVoice(rawValue: selectedVoice) ?? .coral
@@ -385,6 +453,9 @@ final class AppState: ObservableObject {
                 elevenLabsAPIKey: "",
                 elevenLabsVoiceID: "",
                 elevenLabsModelID: elevenLabsModelID,
+                pocketBaseURL: pocketBaseURL,
+                pocketVoiceURL: pocketVoiceURL,
+                pocketRequestTimeoutSec: pocketRequestTimeoutSec,
                 instructions: TTSConfiguration.defaultInstructions
             )
 
@@ -409,9 +480,221 @@ final class AppState: ObservableObject {
                 elevenLabsAPIKey: elevenLabsKey,
                 elevenLabsVoiceID: voiceID,
                 elevenLabsModelID: elevenLabsModelID,
+                pocketBaseURL: pocketBaseURL,
+                pocketVoiceURL: pocketVoiceURL,
+                pocketRequestTimeoutSec: pocketRequestTimeoutSec,
+                instructions: TTSConfiguration.defaultInstructions
+            )
+
+        case .pocketLocal:
+            guard let baseURL = resolvePocketBaseURL(logSource: logSource) else {
+                logger.error("Pocket TTS base URL is empty!", source: logSource)
+                errorMessage = "No Pocket TTS URL configured. Enter URL in Settings or set POCKET_TTS_BASE_URL."
+                return nil
+            }
+
+            return TTSConfiguration(
+                provider: .pocketLocal,
+                openAIAPIKey: openAIAPIKeyOverride ?? "",
+                openAIVoice: openAIVoice,
+                elevenLabsAPIKey: "",
+                elevenLabsVoiceID: "",
+                elevenLabsModelID: elevenLabsModelID,
+                pocketBaseURL: baseURL,
+                pocketVoiceURL: effectivePocketVoice(),
+                pocketRequestTimeoutSec: pocketRequestTimeoutSec,
                 instructions: TTSConfiguration.defaultInstructions
             )
         }
+    }
+
+    @MainActor
+    func installPocketRuntime() async {
+        do {
+            try await pocketRuntimeManager.reinstall(venvPath: pocketManagedVenvPath)
+            pocketManagedLastError = ""
+            errorMessage = nil
+        } catch {
+            pocketManagedLastError = error.localizedDescription
+            errorMessage = error.localizedDescription
+            logger.error("Pocket runtime install failed: \(error.localizedDescription)", source: "AppState")
+        }
+    }
+
+    @MainActor
+    func startPocketRuntime() async {
+        await ensurePocketRuntimeStarted(logSource: "Settings")
+    }
+
+    @MainActor
+    func stopPocketRuntime() {
+        pocketRuntimeManager.stopServer()
+    }
+
+    @MainActor
+    func restartPocketRuntime() async {
+        do {
+            try await pocketRuntimeManager.restartServer(
+                host: pocketManagedHost,
+                port: pocketManagedPort,
+                voice: effectivePocketVoice(),
+                venvPath: pocketManagedVenvPath,
+                autoRestart: pocketManagedAutoStart
+            )
+            pocketManagedLastError = ""
+            errorMessage = nil
+        } catch {
+            pocketManagedLastError = error.localizedDescription
+            errorMessage = error.localizedDescription
+            logger.error("Pocket runtime restart failed: \(error.localizedDescription)", source: "Settings")
+        }
+    }
+
+    @MainActor
+    func runPocketRuntimeHealthCheck() async -> PocketRuntimeHealth {
+        let baseURL = pocketManagedEnabled ? managedPocketBaseURL() : pocketBaseURL
+        return await pocketRuntimeManager.healthCheck(baseURL: baseURL)
+    }
+
+    @MainActor
+    func runPocketRuntimeHealthCheckWithReadout() async {
+        let health = await runPocketRuntimeHealthCheck()
+        guard health.isHealthy else {
+            errorMessage = health.message ?? "Pocket health check failed."
+            return
+        }
+
+        let baseURL = pocketManagedEnabled ? managedPocketBaseURL() : pocketBaseURL
+        let healthCheckConfiguration = TTSConfiguration(
+            provider: .pocketLocal,
+            openAIAPIKey: "",
+            openAIVoice: TTSVoice(rawValue: selectedVoice) ?? .coral,
+            elevenLabsAPIKey: "",
+            elevenLabsVoiceID: "",
+            elevenLabsModelID: elevenLabsModelID,
+            pocketBaseURL: baseURL,
+            pocketVoiceURL: effectivePocketVoice(),
+            pocketRequestTimeoutSec: pocketRequestTimeoutSec,
+            instructions: TTSConfiguration.defaultInstructions
+        )
+
+        errorMessage = nil
+        enqueueRequest(
+            source: .settings,
+            text: "Pocket TTS health check successful.",
+            shouldSummarize: false,
+            targetLanguage: nil,
+            summarizationPromptOverride: nil,
+            ttsConfigurationOverride: healthCheckConfiguration
+        )
+        processNextRequestIfPossible()
+    }
+
+    @MainActor
+    private func ensurePocketRuntimeStarted(logSource: String) async {
+        guard pocketManagedEnabled else { return }
+
+        do {
+            try await pocketRuntimeManager.installIfNeeded(venvPath: pocketManagedVenvPath)
+
+            let portsToTry = candidateManagedPocketPorts(startingAt: pocketManagedPort)
+            var started = false
+            var lastStartupError: Error?
+
+            for port in portsToTry {
+                let baseURL = PocketTTSRuntimeManager.baseURL(host: pocketManagedHost, port: port)
+                let health = await pocketRuntimeManager.healthCheck(baseURL: baseURL)
+                if health.isHealthy {
+                    if pocketManagedPort != port {
+                        logger.warning("Switching Pocket managed port to \(port) because configured port is unavailable", source: logSource)
+                        pocketManagedPort = port
+                    }
+                    started = true
+                    break
+                }
+
+                // Non-pocket service already using this port (e.g. Python HTTP server).
+                if health.statusCode != nil, !health.isPocketAPI {
+                    logger.warning("Port \(port) is occupied by a non-Pocket service, skipping.", source: logSource)
+                    continue
+                }
+
+                do {
+                    try await pocketRuntimeManager.startServer(
+                        host: pocketManagedHost,
+                        port: port,
+                        voice: effectivePocketVoice(),
+                        venvPath: pocketManagedVenvPath,
+                        autoRestart: pocketManagedAutoStart
+                    )
+                    let postStartHealth = await pocketRuntimeManager.healthCheck(baseURL: baseURL)
+                    if postStartHealth.isHealthy {
+                        if pocketManagedPort != port {
+                            logger.warning("Using fallback Pocket managed port \(port)", source: logSource)
+                            pocketManagedPort = port
+                        }
+                        started = true
+                        break
+                    }
+                } catch {
+                    lastStartupError = error
+                }
+            }
+
+            guard started else {
+                if let lastStartupError {
+                    throw lastStartupError
+                }
+                throw PocketRuntimeError.healthCheckFailed
+            }
+
+            pocketManagedLastError = ""
+        } catch {
+            pocketManagedLastError = error.localizedDescription
+            errorMessage = error.localizedDescription
+            logger.error("Pocket runtime startup failed: \(error.localizedDescription)", source: logSource)
+        }
+    }
+
+    private func candidateManagedPocketPorts(startingAt startPort: Int) -> [Int] {
+        let safeStart = max(1025, min(65500, startPort))
+        var ports: [Int] = [safeStart]
+        for offset in 1...5 {
+            let candidate = safeStart + offset
+            if candidate <= 65535 {
+                ports.append(candidate)
+            }
+        }
+        return ports
+    }
+
+    private func pocketLanguageIsAllowed(_ text: String) -> Bool {
+        guard activeTTSProvider() == .pocketLocal else {
+            return true
+        }
+
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized.isEmpty {
+            return true
+        }
+
+        let letterCount = normalized.unicodeScalars.reduce(into: 0) { count, scalar in
+            if CharacterSet.letters.contains(scalar) {
+                count += 1
+            }
+        }
+
+        guard letterCount >= 12 else {
+            return true
+        }
+
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(normalized)
+        guard let dominantLanguage = recognizer.dominantLanguage else {
+            return true
+        }
+
+        return dominantLanguage == .english || dominantLanguage == .undetermined
     }
 
     private func setupHotkeyHandler() {
@@ -563,7 +846,8 @@ final class AppState: ObservableObject {
                 text: rawText,
                 shouldSummarize: shouldSummarize,
                 targetLanguage: targetLanguage,
-                summarizationPromptOverride: nil
+                summarizationPromptOverride: nil,
+                ttsConfigurationOverride: nil
             )
             processNextRequestIfPossible()
         } catch {
@@ -725,16 +1009,22 @@ final class AppState: ObservableObject {
             return
         }
 
-        let targetIndex = Int(Double(displayText.count) * rawProgress)
+        // Visual lead keeps highlights perceptually aligned with speech output,
+        // especially while streaming where duration is still estimated.
+        let leadProgress = min(0.05, (0.008 * playbackSpeed) + 0.006)
+        let adjustedProgress = min(1.0, rawProgress + leadProgress)
+        let targetIndex = Int(Double(displayText.count) * adjustedProgress)
 
         // Smoothing: only move forward, and limit step size for smooth animation
         // Allow backward movement only if it's a significant correction (>5% of text)
         let significantBackward = lastHighlightIndex - targetIndex > displayText.count / 20
 
         if targetIndex >= lastHighlightIndex {
-            // Moving forward - smooth by limiting step size
-            let maxStep = max(1, displayText.count / 100)  // ~1% of text per update
-            highlightCharacterIndex = min(targetIndex, lastHighlightIndex + maxStep)
+            // Move forward with adaptive catch-up speed when we're behind.
+            let delta = targetIndex - lastHighlightIndex
+            let minStep = playbackSpeed >= 1.6 ? 2 : 1
+            let adaptiveStep = max(minStep, Int(ceil(Double(delta) * 0.45)))
+            highlightCharacterIndex = min(targetIndex, lastHighlightIndex + adaptiveStep)
             lastHighlightIndex = highlightCharacterIndex
         } else if significantBackward {
             // Significant backward correction needed - allow it
@@ -864,7 +1154,8 @@ final class AppState: ObservableObject {
             text: text,
             shouldSummarize: shouldSummarize,
             targetLanguage: targetLanguage,
-            summarizationPromptOverride: summarizationPromptOverride
+            summarizationPromptOverride: summarizationPromptOverride,
+            ttsConfigurationOverride: nil
         )
         processNextRequestIfPossible()
     }
@@ -886,10 +1177,34 @@ final class AppState: ObservableObject {
 
         let language = targetLanguage ?? .none
         let summarizationPromptToUse = summarizationPromptOverride ?? summarizationPrompt
+        let provider = request.ttsConfigurationOverride?.provider ?? activeTTSProvider()
         let requiresOpenAIForLLM = shouldSummarize || language != .none
 
+        if provider == .pocketLocal, !pocketManagedEnabled {
+            let configuredBaseURL: String = {
+                let trimmed = pocketBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return TTSConfiguration.defaultPocketBaseURL }
+                if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
+                    return trimmed
+                }
+                return "http://\(trimmed)"
+            }()
+
+            let manualHealth = await pocketRuntimeManager.healthCheck(baseURL: configuredBaseURL)
+            if manualHealth.isHealthy {
+                pocketBaseURL = configuredBaseURL
+            } else if !manualHealth.isPocketAPI,
+                      pocketRuntimeManager.hasInstalledRuntime(venvPath: pocketManagedVenvPath) {
+                logger.warning(
+                    "Configured Pocket endpoint is not Pocket API (\(configuredBaseURL)); switching to managed runtime.",
+                    source: logSource
+                )
+                pocketManagedEnabled = true
+            }
+        }
+
         let openAIAPIKey: String?
-        if requiresOpenAIForLLM || activeTTSProvider() == .openAI {
+        if requiresOpenAIForLLM || provider == .openAI {
             guard let resolved = resolveOpenAIAPIKey(logSource: logSource) else {
                 logger.error("OpenAI API key is empty!", source: logSource)
                 errorMessage = "No OpenAI API key configured. Enter key in Settings or set OPENAI_API_KEY."
@@ -901,7 +1216,28 @@ final class AppState: ObservableObject {
             openAIAPIKey = nil
         }
 
-        guard let ttsConfiguration = resolveTTSConfiguration(logSource: logSource, openAIAPIKeyOverride: openAIAPIKey) else {
+        if provider == .pocketLocal, pocketManagedEnabled {
+            await ensurePocketRuntimeStarted(logSource: logSource)
+            if !pocketManagedLastError.isEmpty {
+                markRequestFinished()
+                return
+            }
+        }
+
+        let ttsConfiguration: TTSConfiguration
+        if let overrideConfiguration = request.ttsConfigurationOverride {
+            ttsConfiguration = overrideConfiguration
+        } else {
+            guard let resolved = resolveTTSConfiguration(logSource: logSource, openAIAPIKeyOverride: openAIAPIKey) else {
+                markRequestFinished()
+                return
+            }
+            ttsConfiguration = resolved
+        }
+
+        if provider == .pocketLocal, !pocketLanguageIsAllowed(text) {
+            logger.error("Pocket TTS only supports English text right now", source: logSource)
+            errorMessage = "Pocket TTS local runtime currently supports English text only."
             markRequestFinished()
             return
         }
