@@ -8,12 +8,14 @@ enum TTSVoice: String, CaseIterable, Identifiable {
 enum TTSProvider: String, CaseIterable, Identifiable {
     case openAI = "openai"
     case elevenLabs = "elevenlabs"
+    case pocketLocal = "pocket-local"
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
         case .openAI: return "OpenAI"
         case .elevenLabs: return "ElevenLabs"
+        case .pocketLocal: return "Pocket TTS (Local)"
         }
     }
 }
@@ -39,6 +41,9 @@ enum ElevenLabsModel: String, CaseIterable, Identifiable {
 struct TTSConfiguration {
     static let defaultInstructions = "Speak naturally and clearly."
     static let defaultElevenLabsModelID = ElevenLabsModel.elevenFlashV25.rawValue
+    static let defaultPocketBaseURL = "http://127.0.0.1:8000"
+    static let defaultPocketVoiceURL = "alba"
+    static let defaultPocketRequestTimeoutSec: Double = 60
 
     let provider: TTSProvider
     let openAIAPIKey: String
@@ -46,6 +51,9 @@ struct TTSConfiguration {
     let elevenLabsAPIKey: String
     let elevenLabsVoiceID: String
     let elevenLabsModelID: String
+    let pocketBaseURL: String
+    let pocketVoiceURL: String
+    let pocketRequestTimeoutSec: Double
     let instructions: String
 
     var historyVoiceLabel: String {
@@ -54,6 +62,9 @@ struct TTSConfiguration {
             return openAIVoice.rawValue
         case .elevenLabs:
             return "elevenlabs:\(elevenLabsVoiceID)"
+        case .pocketLocal:
+            let voice = normalizedPocketVoiceURL ?? Self.defaultPocketVoiceURL
+            return "pocket:\(voice)"
         }
     }
 
@@ -61,6 +72,24 @@ struct TTSConfiguration {
         let trimmed = elevenLabsModelID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return Self.defaultElevenLabsModelID }
         return ElevenLabsModel(rawValue: trimmed)?.rawValue ?? Self.defaultElevenLabsModelID
+    }
+
+    var normalizedPocketBaseURL: String {
+        let trimmed = pocketBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return Self.defaultPocketBaseURL }
+        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
+            return trimmed
+        }
+        return "http://\(trimmed)"
+    }
+
+    var normalizedPocketVoiceURL: String? {
+        let trimmed = pocketVoiceURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    var normalizedPocketRequestTimeoutSec: Double {
+        max(5.0, pocketRequestTimeoutSec)
     }
 }
 
@@ -71,6 +100,11 @@ struct TTSResult {
 }
 
 final class TTSService: NSObject {
+    private enum StreamOutputMode {
+        case rawPCM
+        case wavContainer
+    }
+
     private var currentTask: URLSessionDataTask?
     private var session: URLSession?
     private var onAudioChunk: ((Data) -> Void)?
@@ -83,6 +117,8 @@ final class TTSService: NSObject {
     private var inputText: String = ""
     private var receivedChunkCount: Int = 0
     private var receivedChunkBytes: Int = 0
+    private var streamOutputMode: StreamOutputMode = .rawPCM
+    private var wavStreamDecoder: WAVStreamDecoder?
 
     // Multi-chunk processing state
     private var chunks: [String] = []
@@ -121,6 +157,8 @@ final class TTSService: NSObject {
         isCancelled = false
         receivedChunkCount = 0
         receivedChunkBytes = 0
+        streamOutputMode = .rawPCM
+        wavStreamDecoder = nil
 
         self.onAudioChunk = onAudioChunk
         self.onComplete = onComplete
@@ -142,6 +180,12 @@ final class TTSService: NSObject {
             guard !configuration.elevenLabsVoiceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 print("[Hibiki] ❌ ElevenLabs voice ID is empty in TTSService")
                 onError(TTSError.missingVoiceID(provider: .elevenLabs))
+                return
+            }
+        case .pocketLocal:
+            guard URL(string: configuration.normalizedPocketBaseURL) != nil else {
+                print("[Hibiki] ❌ Invalid Pocket TTS base URL")
+                onError(TTSError.invalidURL)
                 return
             }
         }
@@ -210,6 +254,8 @@ final class TTSService: NSObject {
             streamSingleChunkWithOpenAI(text: text, configuration: configuration)
         case .elevenLabs:
             streamSingleChunkWithElevenLabs(text: text, configuration: configuration)
+        case .pocketLocal:
+            streamSingleChunkWithPocketLocal(text: text, configuration: configuration)
         }
     }
 
@@ -242,6 +288,8 @@ final class TTSService: NSObject {
         }
 
         print("[Hibiki] 🌐 Making API request to OpenAI for chunk \(currentChunkIndex + 1)...")
+        streamOutputMode = .rawPCM
+        wavStreamDecoder = nil
 
         // Create session with delegate for streaming
         session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
@@ -363,6 +411,34 @@ final class TTSService: NSObject {
         task.resume()
     }
 
+    private func streamSingleChunkWithPocketLocal(text: String, configuration: TTSConfiguration) {
+        guard let url = pocketEndpointURL(baseURL: configuration.normalizedPocketBaseURL) else {
+            print("[Hibiki] ❌ Invalid Pocket TTS URL")
+            onError?(TTSError.invalidURL)
+            return
+        }
+
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.setValue("audio/wav", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = configuration.normalizedPocketRequestTimeoutSec
+        request.httpBody = pocketMultipartRequestBody(
+            boundary: boundary,
+            text: text,
+            voiceURL: configuration.normalizedPocketVoiceURL
+        )
+
+        print("[Hibiki] 🌐 Making API request to Pocket TTS for chunk \(currentChunkIndex + 1)...")
+        streamOutputMode = .wavContainer
+        wavStreamDecoder = WAVStreamDecoder()
+
+        session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+        currentTask = session?.dataTask(with: request)
+        currentTask?.resume()
+    }
+
     func cancel() {
         isCancelled = true
         currentTask?.cancel()
@@ -373,6 +449,8 @@ final class TTSService: NSObject {
         chunks = []
         currentChunkIndex = 0
         totalInputTokens = 0
+        streamOutputMode = .rawPCM
+        wavStreamDecoder = nil
         // Reset pipeline state
         pipelineQueue.sync {
             sentenceQueue = []
@@ -435,6 +513,12 @@ final class TTSService: NSObject {
             guard !configuration.elevenLabsVoiceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 print("[Hibiki] ❌ ElevenLabs voice ID is empty in TTSService pipeline")
                 onError(TTSError.missingVoiceID(provider: .elevenLabs))
+                return
+            }
+        case .pocketLocal:
+            guard URL(string: configuration.normalizedPocketBaseURL) != nil else {
+                print("[Hibiki] ❌ Invalid Pocket TTS URL in pipeline")
+                onError(TTSError.invalidURL)
                 return
             }
         }
@@ -513,6 +597,8 @@ final class TTSService: NSObject {
             streamPipelineSentenceWithOpenAI(text: text, configuration: configuration)
         case .elevenLabs:
             streamPipelineSentenceWithElevenLabs(text: text, configuration: configuration)
+        case .pocketLocal:
+            streamPipelineSentenceWithPocketLocal(text: text, configuration: configuration)
         }
     }
 
@@ -696,6 +782,82 @@ final class TTSService: NSObject {
         task.resume()
     }
 
+    private func streamPipelineSentenceWithPocketLocal(text: String, configuration: TTSConfiguration) {
+        guard let url = pocketEndpointURL(baseURL: configuration.normalizedPocketBaseURL) else {
+            print("[Hibiki] ❌ Invalid Pocket TTS URL")
+            pipelineOnError?(TTSError.invalidURL)
+            return
+        }
+
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.setValue("audio/wav", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = configuration.normalizedPocketRequestTimeoutSec
+        request.httpBody = pocketMultipartRequestBody(
+            boundary: boundary,
+            text: text,
+            voiceURL: configuration.normalizedPocketVoiceURL
+        )
+
+        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+
+            if self.isCancelled {
+                return
+            }
+
+            if let error = error {
+                if (error as NSError).code != NSURLErrorCancelled {
+                    print("[Hibiki] ❌ Pipeline Pocket TTS error: \(error.localizedDescription)")
+                    self.pipelineOnError?(error)
+                }
+                return
+            }
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                self.pipelineOnError?(TTSError.apiError(statusCode: 0, message: nil))
+                return
+            }
+
+            guard httpResponse.statusCode == 200 else {
+                print("[Hibiki] ❌ Pipeline Pocket TTS API error: HTTP \(httpResponse.statusCode)")
+                var parsedErrorMessage: String?
+                if let errorBody = data,
+                   let parsed = self.parseErrorMessage(from: errorBody) {
+                    parsedErrorMessage = parsed
+                }
+                self.pipelineOnError?(TTSError.apiError(statusCode: httpResponse.statusCode, message: parsedErrorMessage))
+                return
+            }
+
+            guard let wavData = data, !wavData.isEmpty else {
+                print("[Hibiki] ⚠️ Pipeline Pocket TTS returned empty data")
+                self.finishCurrentSentence(tokens: 0)
+                return
+            }
+
+            do {
+                let pcmData = try self.decodePocketWAVResponseData(wavData)
+                guard !pcmData.isEmpty else {
+                    self.finishCurrentSentence(tokens: 0)
+                    return
+                }
+
+                let estimatedTokens = max(1, text.count / 4)
+                print("[Hibiki] ✅ Pipeline Pocket sentence complete: \(pcmData.count) bytes, ~\(estimatedTokens) tokens")
+
+                self.pipelineOnAudioChunk?(pcmData)
+                self.finishCurrentSentence(tokens: estimatedTokens)
+            } catch {
+                self.pipelineOnError?(error)
+            }
+        }
+
+        task.resume()
+    }
+
     private func configurationByUpdatingElevenLabsModel(
         _ configuration: TTSConfiguration,
         modelID: String
@@ -707,6 +869,9 @@ final class TTSService: NSObject {
             elevenLabsAPIKey: configuration.elevenLabsAPIKey,
             elevenLabsVoiceID: configuration.elevenLabsVoiceID,
             elevenLabsModelID: modelID,
+            pocketBaseURL: configuration.pocketBaseURL,
+            pocketVoiceURL: configuration.pocketVoiceURL,
+            pocketRequestTimeoutSec: configuration.pocketRequestTimeoutSec,
             instructions: configuration.instructions
         )
     }
@@ -752,6 +917,53 @@ final class TTSService: NSObject {
         return String(data: data, encoding: .utf8)
     }
 
+    private func pocketEndpointURL(baseURL: String) -> URL? {
+        guard var components = URLComponents(string: baseURL) else { return nil }
+        let path = components.path
+        if path.isEmpty || path == "/" {
+            components.path = "/tts"
+        } else if !path.hasSuffix("/tts") {
+            components.path = path.hasSuffix("/") ? "\(path)tts" : "\(path)/tts"
+        }
+        return components.url
+    }
+
+    private func pocketMultipartRequestBody(boundary: String, text: String, voiceURL: String?) -> Data {
+        var body = Data()
+
+        func appendField(name: String, value: String) {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(value)\r\n".data(using: .utf8)!)
+        }
+
+        appendField(name: "text", value: text)
+        if let voiceURL, !voiceURL.isEmpty {
+            appendField(name: "voice_url", value: voiceURL)
+        }
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        return body
+    }
+
+    private func decodePocketWAVResponseData(_ data: Data) throws -> Data {
+        let decoder = WAVStreamDecoder()
+        var output = Data()
+        let chunkSize = 4096
+        var offset = 0
+
+        while offset < data.count {
+            let end = min(offset + chunkSize, data.count)
+            let chunk = data[offset..<end]
+            if let pcm = try decoder.consume(Data(chunk)), !pcm.isEmpty {
+                output.append(pcm)
+            }
+            offset = end
+        }
+
+        try decoder.finalize()
+        return output
+    }
+
     /// Mark current sentence as complete and process next
     private func finishCurrentSentence(tokens: Int) {
         pipelineQueue.sync {
@@ -771,8 +983,26 @@ extension TTSService: URLSessionDataDelegate {
         if receivedChunkCount == 1 || receivedChunkCount % 20 == 0 {
             print("[Hibiki] 📦 Received \(receivedChunkCount) chunk(s), \(receivedChunkBytes) bytes total")
         }
-        accumulatedAudioData.append(data)
-        onAudioChunk?(data)
+
+        switch streamOutputMode {
+        case .rawPCM:
+            accumulatedAudioData.append(data)
+            onAudioChunk?(data)
+        case .wavContainer:
+            do {
+                guard let decoder = wavStreamDecoder else {
+                    throw TTSError.audioDecodingFailed("WAV decoder is missing")
+                }
+                if let pcm = try decoder.consume(data), !pcm.isEmpty {
+                    accumulatedAudioData.append(pcm)
+                    onAudioChunk?(pcm)
+                }
+            } catch {
+                print("[Hibiki] ❌ WAV decode error: \(error.localizedDescription)")
+                onError?(error)
+                currentTask?.cancel()
+            }
+        }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
@@ -787,6 +1017,8 @@ extension TTSService: URLSessionDataDelegate {
                 inputText = ""
                 chunks = []
                 currentChunkIndex = 0
+                streamOutputMode = .rawPCM
+                wavStreamDecoder = nil
                 return
             }
             print("[Hibiki] ❌ Network error: \(error.localizedDescription)")
@@ -797,8 +1029,19 @@ extension TTSService: URLSessionDataDelegate {
             inputText = ""
             chunks = []
             currentChunkIndex = 0
+            streamOutputMode = .rawPCM
+            wavStreamDecoder = nil
             onError?(error)
         } else {
+            if streamOutputMode == .wavContainer {
+                do {
+                    try wavStreamDecoder?.finalize()
+                } catch {
+                    onError?(error)
+                    return
+                }
+            }
+
             // Try to parse the response for usage info (fallback check)
             parseResponseForUsage()
 
@@ -819,6 +1062,8 @@ extension TTSService: URLSessionDataDelegate {
             inputTokens = 0
             inputText = ""
             responseHeaders = [:]
+            streamOutputMode = .rawPCM
+            wavStreamDecoder = nil
 
             // Move to next chunk
             currentChunkIndex += 1
@@ -827,6 +1072,10 @@ extension TTSService: URLSessionDataDelegate {
     }
 
     private func parseResponseForUsage() {
+        guard currentConfiguration?.provider == .openAI else {
+            return
+        }
+
         // For TTS API, usage info comes from HTTP headers (extracted in extractUsageFromHeaders)
         // The response body contains raw audio data, not JSON
         // This method is kept for compatibility but usage is already extracted from headers
@@ -872,9 +1121,10 @@ extension TTSService: URLSessionDataDelegate {
                 print("[Hibiki]   \(key): \(value)")
             }
 
-            // Extract usage from headers if available
-            // OpenAI TTS returns usage in x-openai-* headers
-            extractUsageFromHeaders(httpResponse.allHeaderFields)
+            if currentConfiguration?.provider == .openAI {
+                // Extract usage from headers if available.
+                extractUsageFromHeaders(httpResponse.allHeaderFields)
+            }
 
             if httpResponse.statusCode != 200 {
                 print("[Hibiki] ❌ API error: HTTP \(httpResponse.statusCode)")
@@ -937,6 +1187,7 @@ enum TTSError: Error, LocalizedError {
     case invalidURL
     case apiError(statusCode: Int, message: String?)
     case emptyAudioData
+    case audioDecodingFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -946,6 +1197,8 @@ enum TTSError: Error, LocalizedError {
                 return "OpenAI API key is not configured"
             case .elevenLabs:
                 return "ElevenLabs API key is not configured"
+            case .pocketLocal:
+                return "Pocket TTS local runtime is not configured"
             }
         case .missingVoiceID(let provider):
             switch provider {
@@ -953,6 +1206,8 @@ enum TTSError: Error, LocalizedError {
                 return "OpenAI voice is not configured"
             case .elevenLabs:
                 return "ElevenLabs voice ID is not configured"
+            case .pocketLocal:
+                return "Pocket TTS voice is not configured"
             }
         case .invalidConfiguration:
             return "Invalid TTS configuration"
@@ -965,6 +1220,8 @@ enum TTSError: Error, LocalizedError {
             return "API error: HTTP \(statusCode)"
         case .emptyAudioData:
             return "TTS API returned empty audio data"
+        case .audioDecodingFailed(let reason):
+            return "Audio decode failed: \(reason)"
         }
     }
 }

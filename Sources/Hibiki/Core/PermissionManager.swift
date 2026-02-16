@@ -5,7 +5,7 @@ import ApplicationServices
 /// Views should maintain their own @State for permission status and call checkAccessibility() to update.
 final class PermissionManager {
     static let shared = PermissionManager()
-    private var didAutoPromptThisLaunch = false
+    private var didAutoOpenSettingsThisLaunch = false
 
     private init() {}
 
@@ -16,9 +16,23 @@ final class PermissionManager {
 
     func requestAccessibilityPermission(auto: Bool = false) {
         if auto {
-            guard !didAutoPromptThisLaunch else { return }
-            didAutoPromptThisLaunch = true
+            guard !didAutoOpenSettingsThisLaunch else { return }
+            didAutoOpenSettingsThisLaunch = true
+
+            let openSettings: () -> Void = { [weak self] in
+                self?.bringAccessibilitySettingsToFront()
+            }
+
+            if Thread.isMainThread {
+                openSettings()
+            } else {
+                DispatchQueue.main.async {
+                    openSettings()
+                }
+            }
+            return
         }
+
         let prompt: () -> Void = { [weak self] in
             // This opens System Settings > Privacy > Accessibility with app highlighted
             let options: NSDictionary = [

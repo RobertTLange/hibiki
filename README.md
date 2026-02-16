@@ -22,7 +22,7 @@ A macOS menu bar app that reads selected text aloud using OpenAI or ElevenLabs t
 | **Agent Integration** | Built-in skill + hook templates for agent-driven spoken output |
 | **Global Hotkeys** | Option+F for TTS, Shift+Option+F for Summarize+TTS |
 | **Streaming Audio** | Audio plays as it's generated for fast response |
-| **TTS Providers** | OpenAI voices or ElevenLabs voice IDs |
+| **TTS Providers** | OpenAI, ElevenLabs, or local Pocket TTS |
 | **AI Summarization** | Condense long texts before reading (GPT-5 Nano/Mini/5.2) |
 | **Translation** | Translate to English, Japanese, German, French, Spanish |
 | **CLI Tool** | `hibiki --text "Hello"` with `--summarize` and `--translate` flags |
@@ -34,6 +34,7 @@ A macOS menu bar app that reads selected text aloud using OpenAI or ElevenLabs t
 - macOS 14.0 or later
 - OpenAI API key (required for summarization/translation and OpenAI TTS)
 - ElevenLabs API key (required if using ElevenLabs TTS provider)
+- `uv` (required for one-click managed Pocket TTS install)
 - Accessibility permission (to read selected text from other apps)
 
 ## Installation
@@ -66,6 +67,22 @@ CLI binary path: `Hibiki.app/Contents/MacOS/hibiki-cli`
 2. **Grant Accessibility Permission** — Settings → follow instructions
 3. **Add API key(s)** — OpenAI and/or ElevenLabs in Settings, or env vars `OPENAI_API_KEY` / `ELEVENLABS_API_KEY`
 4. **Configure Hotkeys** (optional) — defaults: Option+F (TTS), Shift+Option+F (Summarize+TTS)
+
+### Local Pocket TTS (managed)
+
+1. Open **Settings → Configuration → Local Pocket TTS (Managed)**.
+2. Enable managed runtime.
+3. Click **Install / Reinstall** (uses `uv` to create a local venv and install `pocket-tts`).
+4. Click **Start** (or enable auto-start).
+5. Select provider **Pocket TTS (Local)** in the Text to Speech section.
+
+Default managed endpoint: `http://127.0.0.1:8000`
+
+Integration note: Hibiki uses a managed local Pocket TTS runtime (install/start/health checks in-app) and streams Pocket-generated WAV audio directly to the built-in player.
+
+Official Pocket TTS repository: [kyutai-labs/pocket-tts](https://github.com/kyutai-labs/pocket-tts)
+
+Note: Pocket local mode is currently English-only in Hibiki.
 
 ## CLI Usage
 
@@ -120,6 +137,7 @@ Then merge `agents/hooks.json` into your `~/.claude/settings.json`.
 | "Accessibility permission not granted" | Grant permission in System Settings |
 | "No OpenAI API key configured" | Add key in Settings or set `OPENAI_API_KEY` |
 | "No ElevenLabs API key configured" | Add key in Settings or set `ELEVENLABS_API_KEY` |
+| "uv was not found" | Install `uv` and retry Pocket managed install |
 | Chrome not capturing text | Hibiki auto-falls back to clipboard (Cmd+C) |
 
 Debug logs available in Settings → Debug tab.
@@ -137,6 +155,7 @@ Sources/
     │   ├── AppState.swift           # Main application state
     │   ├── AccessibilityManager.swift   # Text selection via accessibility API
     │   ├── CLIRequestHandler.swift  # Handles CLI requests via URL scheme
+    │   ├── PocketTTSRuntimeManager.swift # Managed local Pocket runtime install/start/health
     │   ├── PermissionManager.swift      # Permission checking
     │   ├── DebugLogger.swift        # In-app debug logging
     │   ├── HistoryManager.swift     # TTS history tracking
@@ -146,6 +165,7 @@ Sources/
     │   └── UsageStatistics.swift    # Usage tracking
     ├── Audio/
     │   ├── TTSService.swift         # OpenAI + ElevenLabs TTS API client
+    │   ├── WAVStreamDecoder.swift   # Streaming WAV -> PCM decoder for local Pocket TTS
     │   ├── StreamingAudioPlayer.swift   # PCM audio playback
     │   └── AudioLevelMonitor.swift  # Audio level monitoring for waveform
     └── Views/

@@ -1,14 +1,19 @@
 import SwiftUI
 import AppKit
 import KeyboardShortcuts
+import HibikiPocketRuntime
 
 struct ConfigurationTab: View {
     @EnvironmentObject var appState: AppState
+    @StateObject private var pocketRuntimeManager = PocketTTSRuntimeManager.shared
     @State private var showOpenAIKey = false
     @State private var showElevenLabsKey = false
     @State private var hasAccessibility = false
     @State private var cliInstallStatus: CLIInstallStatus = .unknown
     @State private var isInstallingCLI = false
+    @State private var isInstallingPocketRuntime = false
+    @State private var isStartingPocketRuntime = false
+    @State private var isRestartingPocketRuntime = false
 
     private let asciiArt = """
          _     _ _     _ _    _              .-----------.
@@ -110,6 +115,34 @@ struct ConfigurationTab: View {
         HistoryManager.shared.audioDirectory.deletingLastPathComponent()
     }
 
+    private var pocketStatusIcon: String {
+        switch pocketRuntimeManager.status {
+        case .running:
+            return "checkmark.circle.fill"
+        case .installing, .starting:
+            return "arrow.triangle.2.circlepath.circle.fill"
+        case .unhealthy, .failed:
+            return "xmark.circle.fill"
+        case .installed, .stopped:
+            return "pause.circle.fill"
+        case .notInstalled:
+            return "xmark.circle.fill"
+        }
+    }
+
+    private var pocketStatusColor: Color {
+        switch pocketRuntimeManager.status {
+        case .running:
+            return .green
+        case .installing, .starting:
+            return .orange
+        case .installed, .stopped:
+            return .secondary
+        case .unhealthy, .failed, .notInstalled:
+            return .red
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -190,7 +223,7 @@ struct ConfigurationTab: View {
                                 .frame(maxWidth: .infinity, alignment: .topLeading)
                             }
 
-                            Text("Env vars: OPENAI_API_KEY, ELEVENLABS_API_KEY")
+                            Text("Env vars: OPENAI_API_KEY, ELEVENLABS_API_KEY, POCKET_TTS_BASE_URL")
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
 
@@ -324,7 +357,7 @@ struct ConfigurationTab: View {
                                     .font(.caption)
                                     .foregroundColor(.primary.opacity(0.7))
                                     .italic()
-                            } else {
+                            } else if selectedTTSProvider == .elevenLabs {
                                 VStack(alignment: .leading, spacing: 6) {
                                     Text("Model ID:")
                                         .font(.caption)
@@ -341,9 +374,46 @@ struct ConfigurationTab: View {
                                 Text("Voice ID is configurable in API Keys.")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
+                            } else {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    if !appState.pocketManagedEnabled {
+                                        Text("Endpoint URL:")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        TextField("http://127.0.0.1:8000", text: $appState.pocketBaseURL)
+                                            .textFieldStyle(.roundedBorder)
+
+                                        Text("Voice URL / name:")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        TextField("alba", text: $appState.pocketVoiceURL)
+                                            .textFieldStyle(.roundedBorder)
+                                    } else {
+                                        Text("Managed runtime controls host, port, and voice below.")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+
+                                    HStack(spacing: 8) {
+                                        Text("Timeout (s):")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        TextField(
+                                            "60",
+                                            value: $appState.pocketRequestTimeoutSec,
+                                            format: .number.precision(.fractionLength(0...1))
+                                        )
+                                        .textFieldStyle(.roundedBorder)
+                                        .frame(width: 80)
+                                    }
+                                }
+
+                                Text("Pocket TTS local mode is English-only in this release.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
                             }
 
-                            Text("OpenAI voices are ignored when provider is ElevenLabs.")
+                            Text("Provider-specific settings apply only to the selected provider.")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
 
@@ -435,6 +505,127 @@ struct ConfigurationTab: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .fixedSize(horizontal: false, vertical: true)
+
+                GroupBox("Local Pocket TTS (Managed)") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle("Enable managed runtime", isOn: $appState.pocketManagedEnabled)
+                        Toggle("Auto-start with Hibiki", isOn: $appState.pocketManagedAutoStart)
+
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Host")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                TextField("127.0.0.1", text: $appState.pocketManagedHost)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 140)
+                            }
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Port")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                TextField("8000", value: $appState.pocketManagedPort, format: .number)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 90)
+                            }
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Voice")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                TextField("alba", text: $appState.pocketManagedVoiceURL)
+                                    .textFieldStyle(.roundedBorder)
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Managed venv path")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            TextField("", text: $appState.pocketManagedVenvPath)
+                                .textFieldStyle(.roundedBorder)
+                        }
+
+                        HStack(spacing: 8) {
+                            Image(systemName: pocketStatusIcon)
+                                .foregroundColor(pocketStatusColor)
+                            Text(pocketRuntimeManager.status.displayName)
+                                .font(.system(.caption, design: .monospaced))
+                            Text("v\(pocketRuntimeManager.installedVersion)")
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            if let date = pocketRuntimeManager.lastHealthCheckAt {
+                                Text("health \(date.formatted(date: .omitted, time: .standard))")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+
+                        HStack(spacing: 8) {
+                            Button("Install / Reinstall") {
+                                Task {
+                                    isInstallingPocketRuntime = true
+                                    await appState.installPocketRuntime()
+                                    isInstallingPocketRuntime = false
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(isInstallingPocketRuntime || isStartingPocketRuntime || isRestartingPocketRuntime)
+
+                            Button("Start") {
+                                Task {
+                                    isStartingPocketRuntime = true
+                                    await appState.startPocketRuntime()
+                                    isStartingPocketRuntime = false
+                                }
+                            }
+                            .disabled(isInstallingPocketRuntime || isStartingPocketRuntime || isRestartingPocketRuntime)
+
+                            Button("Stop") {
+                                appState.stopPocketRuntime()
+                            }
+                            .disabled(isInstallingPocketRuntime || isStartingPocketRuntime || isRestartingPocketRuntime)
+
+                            Button("Restart") {
+                                Task {
+                                    isRestartingPocketRuntime = true
+                                    await appState.restartPocketRuntime()
+                                    isRestartingPocketRuntime = false
+                                }
+                            }
+                            .disabled(isInstallingPocketRuntime || isStartingPocketRuntime || isRestartingPocketRuntime)
+
+                            Button("Health Check") {
+                                Task {
+                                    await appState.runPocketRuntimeHealthCheckWithReadout()
+                                }
+                            }
+                            .disabled(isInstallingPocketRuntime || isStartingPocketRuntime || isRestartingPocketRuntime)
+
+                            if isInstallingPocketRuntime || isStartingPocketRuntime || isRestartingPocketRuntime {
+                                ProgressView()
+                                    .scaleEffect(0.7)
+                            }
+                        }
+
+                        if !appState.pocketManagedLastError.isEmpty {
+                            Text(appState.pocketManagedLastError)
+                                .font(.caption)
+                                .foregroundColor(.red)
+                        }
+
+                        if !pocketRuntimeManager.recentLogs.isEmpty {
+                            Text(pocketRuntimeManager.recentLogs.suffix(4).joined(separator: "\n"))
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.secondary)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
 
                 GroupBox("History Retention") {
                     VStack(alignment: .leading, spacing: 10) {
