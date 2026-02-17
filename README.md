@@ -39,27 +39,18 @@ A macOS menu bar app that reads selected text aloud using OpenAI or ElevenLabs t
 
 ## Installation
 
-### Download (recommended)
-
-1. Download the latest DMG from [GitHub Releases](https://github.com/RobertTLange/hibiki/releases/latest).
-2. Open the DMG and drag `Hibiki.app` to `/Applications`.
-3. Launch Hibiki once from `/Applications`.
-4. Install CLI from Settings > Configuration > CLI, or run:
-
-```bash
-sudo ln -sf /Applications/Hibiki.app/Contents/MacOS/hibiki-cli /usr/local/bin/hibiki
-```
-
-### Build from source
+Build from source (recommended):
 
 ```bash
 git clone https://github.com/RobertTLange/hibiki.git
 cd hibiki
-./build.sh --run
-./build.sh --install
+./build.sh
+cp -R .build/Hibiki.app /Applications/Hibiki.app
+open /Applications/Hibiki.app
+sudo ln -sf /Applications/Hibiki.app/Contents/MacOS/hibiki-cli /usr/local/bin/hibiki
 ```
 
-CLI binary path: `Hibiki.app/Contents/MacOS/hibiki-cli`
+CLI binary path inside the app bundle: `Hibiki.app/Contents/MacOS/hibiki-cli`
 
 ## Setup
 
