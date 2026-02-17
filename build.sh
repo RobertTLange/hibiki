@@ -5,11 +5,32 @@ set -e
 BUILD_DMG=false
 RUN_APP=false
 INSTALL_CLI=false
+NOTARIZE=false
+SIGN_IDENTITY="${HIBIKI_CODESIGN_IDENTITY:-}"
+NOTARY_PROFILE="${HIBIKI_NOTARY_PROFILE:-}"
 for arg in "$@"; do
     case $arg in
         --dmg) BUILD_DMG=true ;;
         --run) RUN_APP=true ;;
         --install) INSTALL_CLI=true ;;
+        --notarize) NOTARIZE=true ;;
+        --sign-identity=*) SIGN_IDENTITY="${arg#*=}" ;;
+        --notary-profile=*) NOTARY_PROFILE="${arg#*=}" ;;
+        --help)
+            cat << 'USAGE'
+Usage: ./build.sh [--dmg] [--run] [--install] [--notarize] [--sign-identity=<identity>] [--notary-profile=<profile>]
+
+Environment overrides:
+  HIBIKI_CODESIGN_IDENTITY   Developer ID identity name
+  HIBIKI_NOTARY_PROFILE      notarytool keychain profile name
+
+Examples:
+  ./build.sh --dmg
+  ./build.sh --dmg --sign-identity="Developer ID Application: Your Name (TEAMID)"
+  ./build.sh --dmg --notarize --sign-identity="Developer ID Application: Your Name (TEAMID)" --notary-profile="hibiki-notary"
+USAGE
+            exit 0
+            ;;
     esac
 done
 
@@ -165,13 +186,27 @@ fi
 
 # Codesign after all files are copied into the app bundle.
 # Signing earlier is invalidated by later mutations (e.g. copying hibiki-cli).
-codesign --force --deep --sign - "$APP_DIR"
+if [ -n "$SIGN_IDENTITY" ]; then
+    echo "Signing app with identity: $SIGN_IDENTITY"
+    codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_DIR"
+else
+    echo "Signing app ad-hoc (not trusted by Gatekeeper)."
+    codesign --force --deep --sign - "$APP_DIR"
+fi
+
+codesign --verify --deep --strict "$APP_DIR"
 
 # Reset accessibility permission so it re-registers with the .app bundle (and its icon)
 tccutil reset Accessibility com.superlisten.hibiki 2>/dev/null || true
 
 # Create DMG if requested
 if [ "$BUILD_DMG" = true ]; then
+    if [ -z "$SIGN_IDENTITY" ]; then
+        echo "Warning: DMG is being built without Developer ID signing."
+        echo "Gatekeeper will likely show 'Apple could not verify ... is free of malware'."
+        echo "Set HIBIKI_CODESIGN_IDENTITY (or --sign-identity=...) for release builds."
+    fi
+
     echo "Creating DMG..."
     DMG_DIR=".build/dmg"
     DMG_PATH=".build/Hibiki.dmg"
@@ -187,6 +222,30 @@ if [ "$BUILD_DMG" = true ]; then
 
     # Create DMG
     hdiutil create -volname "Hibiki" -srcfolder "$DMG_DIR" -ov -format UDZO "$DMG_PATH"
+
+    if [ -n "$SIGN_IDENTITY" ]; then
+        echo "Signing DMG with identity: $SIGN_IDENTITY"
+        codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG_PATH"
+    fi
+
+    if [ "$NOTARIZE" = true ]; then
+        if [ -z "$SIGN_IDENTITY" ]; then
+            echo "Error: --notarize requires Developer ID signing identity."
+            exit 1
+        fi
+        if [ -z "$NOTARY_PROFILE" ]; then
+            echo "Error: --notarize requires notary profile."
+            echo "Set HIBIKI_NOTARY_PROFILE or pass --notary-profile=<profile>."
+            exit 1
+        fi
+
+        echo "Submitting DMG for notarization with profile: $NOTARY_PROFILE"
+        xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
+
+        echo "Stapling notarization ticket..."
+        xcrun stapler staple "$DMG_PATH"
+        xcrun stapler validate "$DMG_PATH"
+    fi
 
     # Clean up staging directory
     rm -rf "$DMG_DIR"
