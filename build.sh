@@ -105,9 +105,6 @@ cat > "$APP_DIR/Contents/Info.plist" << 'EOF'
 </plist>
 EOF
 
-# Codesign the app bundle (ad-hoc signing to seal resources)
-codesign --force --deep --sign - "$APP_DIR"
-
 echo "Built Hibiki.app at: $APP_DIR"
 
 # Build CLI tool
@@ -165,6 +162,10 @@ if [ "$INSTALL_CLI" = true ]; then
     fi
     echo "You can now run 'hibiki --help' from anywhere"
 fi
+
+# Codesign after all files are copied into the app bundle.
+# Signing earlier is invalidated by later mutations (e.g. copying hibiki-cli).
+codesign --force --deep --sign - "$APP_DIR"
 
 # Reset accessibility permission so it re-registers with the .app bundle (and its icon)
 tccutil reset Accessibility com.superlisten.hibiki 2>/dev/null || true
