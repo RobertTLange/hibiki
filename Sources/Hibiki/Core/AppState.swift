@@ -215,6 +215,11 @@ final class AppState: ObservableObject {
     }
     private var requestQueue: [QueuedRequest] = []
     private var activeRequest: QueuedRequest?
+    private enum EnvironmentLookupSource: String {
+        case processInfo = "process environment"
+        case launchctl = "launchctl getenv"
+    }
+    private var launchctlEnvironmentCache: [String: String] = [:]
 
     @MainActor
     private func syncRequestQueueState() {
@@ -314,25 +319,20 @@ final class AppState: ObservableObject {
         if ElevenLabsModel(rawValue: elevenLabsModelID) == nil {
             elevenLabsModelID = TTSConfiguration.defaultElevenLabsModelID
         }
-        // Default OpenAI key from environment variable if not set
-        if apiKey.isEmpty,
-           let envKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"],
-           !envKey.isEmpty {
+        if let (envKey, source) = resolvedEnvironmentValue(for: "OPENAI_API_KEY", logSource: "AppState"),
+           apiKey != envKey {
             apiKey = envKey
-            logger.info("Loaded OpenAI API key from OPENAI_API_KEY", source: "AppState")
+            logger.info("Loaded OpenAI API key from OPENAI_API_KEY via \(source.rawValue)", source: "AppState")
         }
-        // Default ElevenLabs key from environment variable if not set
-        if elevenLabsAPIKey.isEmpty,
-           let envKey = ProcessInfo.processInfo.environment["ELEVENLABS_API_KEY"],
-           !envKey.isEmpty {
+        if let (envKey, source) = resolvedEnvironmentValue(for: "ELEVENLABS_API_KEY", logSource: "AppState"),
+           elevenLabsAPIKey != envKey {
             elevenLabsAPIKey = envKey
-            logger.info("Loaded ElevenLabs API key from ELEVENLABS_API_KEY", source: "AppState")
+            logger.info("Loaded ElevenLabs API key from ELEVENLABS_API_KEY via \(source.rawValue)", source: "AppState")
         }
         if pocketBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           let envBaseURL = ProcessInfo.processInfo.environment["POCKET_TTS_BASE_URL"],
-           !envBaseURL.isEmpty {
+           let (envBaseURL, source) = resolvedEnvironmentValue(for: "POCKET_TTS_BASE_URL", logSource: "AppState") {
             pocketBaseURL = envBaseURL
-            logger.info("Loaded Pocket TTS base URL from POCKET_TTS_BASE_URL", source: "AppState")
+            logger.info("Loaded Pocket TTS base URL from POCKET_TTS_BASE_URL via \(source.rawValue)", source: "AppState")
         }
         if pocketManagedVenvPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             pocketManagedVenvPath = PocketTTSRuntimeManager.defaultVenvPath()
@@ -373,29 +373,93 @@ final class AppState: ObservableObject {
         return .openAI
     }
 
-    private func resolveOpenAIAPIKey(logSource: String) -> String? {
-        if !apiKey.isEmpty {
-            return apiKey
+    private func normalizedEnvironmentValue(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed
+    }
+
+    private func resolvedEnvironmentValue(for key: String, logSource: String) -> (String, EnvironmentLookupSource)? {
+        if let processValue = normalizedEnvironmentValue(ProcessInfo.processInfo.environment[key]) {
+            return (processValue, .processInfo)
         }
 
-        if let envKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"], !envKey.isEmpty {
-            apiKey = envKey
-            logger.info("Loaded OpenAI API key from OPENAI_API_KEY", source: logSource)
+        if let launchctlValue = launchctlEnvironmentValue(for: key, logSource: logSource) {
+            return (launchctlValue, .launchctl)
+        }
+
+        return nil
+    }
+
+    private func launchctlEnvironmentValue(for key: String, logSource: String) -> String? {
+        if let cached = launchctlEnvironmentCache[key] {
+            return cached
+        }
+
+        guard let value = readLaunchctlEnvironmentValue(for: key, logSource: logSource) else {
+            return nil
+        }
+        launchctlEnvironmentCache[key] = value
+        return value
+    }
+
+    private func readLaunchctlEnvironmentValue(for key: String, logSource: String) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = ["getenv", key]
+
+        let outputPipe = Pipe()
+        process.standardOutput = outputPipe
+
+        do {
+            try process.run()
+        } catch {
+            logger.debug("launchctl getenv \(key) failed to run: \(error.localizedDescription)", source: logSource)
+            return nil
+        }
+
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            logger.debug("launchctl getenv \(key) exited with status \(process.terminationStatus)", source: logSource)
+            return nil
+        }
+
+        let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        guard let outputString = String(data: output, encoding: .utf8) else {
+            logger.debug("launchctl getenv \(key) output was not UTF-8", source: logSource)
+            return nil
+        }
+        return normalizedEnvironmentValue(outputString)
+    }
+
+    private func resolveOpenAIAPIKey(logSource: String) -> String? {
+        if let (envKey, source) = resolvedEnvironmentValue(for: "OPENAI_API_KEY", logSource: logSource) {
+            if apiKey != envKey {
+                apiKey = envKey
+                logger.info("Loaded OpenAI API key from OPENAI_API_KEY via \(source.rawValue)", source: logSource)
+            }
             return envKey
+        }
+
+        if let storedKey = normalizedEnvironmentValue(apiKey) {
+            return storedKey
         }
 
         return nil
     }
 
     private func resolveElevenLabsAPIKey(logSource: String) -> String? {
-        if !elevenLabsAPIKey.isEmpty {
-            return elevenLabsAPIKey
+        if let (envKey, source) = resolvedEnvironmentValue(for: "ELEVENLABS_API_KEY", logSource: logSource) {
+            if elevenLabsAPIKey != envKey {
+                elevenLabsAPIKey = envKey
+                logger.info("Loaded ElevenLabs API key from ELEVENLABS_API_KEY via \(source.rawValue)", source: logSource)
+            }
+            return envKey
         }
 
-        if let envKey = ProcessInfo.processInfo.environment["ELEVENLABS_API_KEY"], !envKey.isEmpty {
-            elevenLabsAPIKey = envKey
-            logger.info("Loaded ElevenLabs API key from ELEVENLABS_API_KEY", source: logSource)
-            return envKey
+        if let storedKey = normalizedEnvironmentValue(elevenLabsAPIKey) {
+            return storedKey
         }
 
         return nil
@@ -424,10 +488,9 @@ final class AppState: ObservableObject {
             return configuredBaseURL
         }
 
-        if let envURL = ProcessInfo.processInfo.environment["POCKET_TTS_BASE_URL"],
-           !envURL.isEmpty {
+        if let (envURL, source) = resolvedEnvironmentValue(for: "POCKET_TTS_BASE_URL", logSource: logSource) {
             pocketBaseURL = envURL
-            logger.info("Loaded Pocket base URL from POCKET_TTS_BASE_URL", source: logSource)
+            logger.info("Loaded Pocket base URL from POCKET_TTS_BASE_URL via \(source.rawValue)", source: logSource)
             return envURL
         }
 

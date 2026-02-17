@@ -59,6 +59,19 @@ CLI binary path inside the app bundle: `Hibiki.app/Contents/MacOS/hibiki-cli`
 3. **Add API key(s)** — OpenAI and/or ElevenLabs in Settings, or env vars `OPENAI_API_KEY` / `ELEVENLABS_API_KEY`
 4. **Configure Hotkeys** (optional) — defaults: Option+F (TTS), Shift+Option+F (Summarize+TTS)
 
+### Environment Variables (macOS menu bar apps)
+
+If Hibiki is launched from Finder or `open`, it may not inherit terminal shell exports.  
+Set env vars through `launchctl` for GUI app visibility:
+
+```bash
+launchctl setenv OPENAI_API_KEY "sk-..."
+launchctl setenv ELEVENLABS_API_KEY "..."
+launchctl setenv POCKET_TTS_BASE_URL "http://127.0.0.1:8000"
+```
+
+Remove them later with `launchctl unsetenv <NAME>`.
+
 ### Local Pocket TTS (managed)
 
 1. Open **Settings → Configuration → Local Pocket TTS (Managed)**.
@@ -118,7 +131,7 @@ Then merge `agents/hooks.json` into your `~/.claude/settings.json`.
 
 - Never commit API keys to this repo.
 - Prefer configuring keys inside Hibiki Settings.
-- If you use environment variables, set them in shell startup files that are not tracked.
+- For menu bar app launches, prefer `launchctl setenv ...` so Hibiki can read env vars.
 
 ## Troubleshooting
 
@@ -126,8 +139,8 @@ Then merge `agents/hooks.json` into your `~/.claude/settings.json`.
 |-------|----------|
 | "No text selected" | Ensure text is selected before pressing hotkey |
 | "Accessibility permission not granted" | Grant permission in System Settings |
-| "No OpenAI API key configured" | Add key in Settings or set `OPENAI_API_KEY` |
-| "No ElevenLabs API key configured" | Add key in Settings or set `ELEVENLABS_API_KEY` |
+| "No OpenAI API key configured" | Add key in Settings, or run `launchctl setenv OPENAI_API_KEY "sk-..."` |
+| "No ElevenLabs API key configured" | Add key in Settings, or run `launchctl setenv ELEVENLABS_API_KEY "..."` |
 | "uv was not found" | Install `uv` and retry Pocket managed install |
 | Chrome not capturing text | Hibiki auto-falls back to clipboard (Cmd+C) |
 
