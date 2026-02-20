@@ -15,6 +15,7 @@ Invoke this skill when the user:
 - Needs to summarize and speak content
 - Wants text translated and spoken
 - Requests audio output of text content
+- Wants a file read aloud
 
 ## Requirements
 
@@ -29,9 +30,16 @@ hibiki --text "Hello, world!"
 ```
 Speaks the provided text aloud using the configured voice.
 
+### File Input (Text from File)
+```bash
+hibiki --file-name README.md
+```
+Reads UTF-8 text from a file and speaks it aloud.
+
 ### Summarize + TTS
 ```bash
 hibiki --text "Long article or document text here..." --summarize
+hibiki --file-name notes.md --summarize
 ```
 Summarizes the text using an LLM, then speaks the summary aloud. Useful for long content.
 
@@ -45,6 +53,7 @@ Overrides the default summarization prompt (requires `--summarize`).
 ### Translate + TTS
 ```bash
 hibiki --text "Hello" --translate ja
+hibiki --file-name draft.txt --translate fr
 ```
 Translates the text to the specified language, then speaks it aloud.
 
@@ -101,9 +110,16 @@ hibiki --text "Hello, how are you?" --translate ja
 hibiki --text "Long content..." --summarize --translate de
 ```
 
+**User asks:** "Read this file out loud"
+```bash
+hibiki --file-name docs/notes.txt
+```
+
 ## Notes
 
 - Maximum text length is ~32KB (after URL encoding)
+- Input source: use exactly one of `--text` or `--file-name`
+- `--file-name` expects UTF-8 text files
 - Audio plays through the Hibiki AudioPlayerPanel UI
 - Requests are saved to Hibiki's history
 - Voice and API settings are configured in the Hibiki app's Settings
