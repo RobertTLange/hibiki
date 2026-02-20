@@ -209,10 +209,12 @@ if [ "$BUILD_DMG" = true ]; then
 
     echo "Creating DMG..."
     DMG_DIR=".build/dmg"
-    DMG_PATH=".build/Hibiki.dmg"
+    DMG_BUILD_PATH=".build/Hibiki.dmg"
+    DMG_PATH="./Hibiki.dmg"
 
     # Clean up any previous DMG build
     rm -rf "$DMG_DIR"
+    rm -f "$DMG_BUILD_PATH"
     rm -f "$DMG_PATH"
 
     # Create DMG staging directory
@@ -221,11 +223,11 @@ if [ "$BUILD_DMG" = true ]; then
     ln -s /Applications "$DMG_DIR/Applications"
 
     # Create DMG
-    hdiutil create -volname "Hibiki" -srcfolder "$DMG_DIR" -ov -format UDZO "$DMG_PATH"
+    hdiutil create -volname "Hibiki" -srcfolder "$DMG_DIR" -ov -format UDZO "$DMG_BUILD_PATH"
 
     if [ -n "$SIGN_IDENTITY" ]; then
         echo "Signing DMG with identity: $SIGN_IDENTITY"
-        codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG_PATH"
+        codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG_BUILD_PATH"
     fi
 
     if [ "$NOTARIZE" = true ]; then
@@ -240,12 +242,14 @@ if [ "$BUILD_DMG" = true ]; then
         fi
 
         echo "Submitting DMG for notarization with profile: $NOTARY_PROFILE"
-        xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
+        xcrun notarytool submit "$DMG_BUILD_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
 
         echo "Stapling notarization ticket..."
-        xcrun stapler staple "$DMG_PATH"
-        xcrun stapler validate "$DMG_PATH"
+        xcrun stapler staple "$DMG_BUILD_PATH"
+        xcrun stapler validate "$DMG_BUILD_PATH"
     fi
+
+    mv "$DMG_BUILD_PATH" "$DMG_PATH"
 
     # Clean up staging directory
     rm -rf "$DMG_DIR"
