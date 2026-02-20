@@ -15,6 +15,7 @@ struct HighlightedTextView: NSViewRepresentable {
         scrollView.autohidesScrollers = true
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
+        context.coordinator.attach(to: scrollView)
 
         let textView = NSTextView()
         textView.isEditable = false
@@ -52,6 +53,10 @@ struct HighlightedTextView: NSViewRepresentable {
         textView.textContainer?.containerSize = NSSize(width: nsView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
         let clampedIndex = clampedHighlightIndex(for: text, highlightIndex: highlightIndex)
         let highlightNSColor = NSColor(highlightColor)
+        let isNewRun = context.coordinator.lastText != text || clampedIndex < context.coordinator.lastHighlightIndex
+        if isNewRun {
+            context.coordinator.followHighlight = true
+        }
 
         if context.coordinator.lastText != text || context.coordinator.lastHighlightIndex < 0 {
             textView.textStorage?.setAttributedString(
@@ -74,7 +79,9 @@ struct HighlightedTextView: NSViewRepresentable {
         context.coordinator.lastText = text
         context.coordinator.lastHighlightIndex = clampedIndex
 
-        scrollHighlightIntoView(textView: textView, text: text, highlightIndex: clampedIndex)
+        if context.coordinator.followHighlight {
+            scrollHighlightIntoView(textView: textView, text: text, highlightIndex: clampedIndex, coordinator: context.coordinator)
+        }
     }
 
     // MARK: - Helpers
@@ -188,7 +195,12 @@ struct HighlightedTextView: NSViewRepresentable {
         return (beforeRange, currentRange, afterRange)
     }
 
-    private func scrollHighlightIntoView(textView: NSTextView, text: String, highlightIndex: Int) {
+    private func scrollHighlightIntoView(
+        textView: NSTextView,
+        text: String,
+        highlightIndex: Int,
+        coordinator: Coordinator
+    ) {
         guard let scrollView = textView.enclosingScrollView,
               let layoutManager = textView.layoutManager,
               let textContainer = textView.textContainer,
@@ -224,13 +236,48 @@ struct HighlightedTextView: NSViewRepresentable {
             return
         }
 
+        coordinator.isProgrammaticScroll = true
         clipView.setBoundsOrigin(NSPoint(x: 0, y: clampedY))
         scrollView.reflectScrolledClipView(clipView)
+        coordinator.isProgrammaticScroll = false
     }
 
     final class Coordinator {
         var lastText: String = ""
         var lastHighlightIndex: Int = -1
+        var followHighlight: Bool = true
+        var isProgrammaticScroll: Bool = false
+        private var scrollObserver: NSObjectProtocol?
+        private weak var observedScrollView: NSScrollView?
+
+        deinit {
+            detach()
+        }
+
+        func attach(to scrollView: NSScrollView) {
+            guard observedScrollView !== scrollView else { return }
+            detach()
+            observedScrollView = scrollView
+
+            scrollObserver = NotificationCenter.default.addObserver(
+                forName: NSScrollView.didLiveScrollNotification,
+                object: scrollView,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                if !self.isProgrammaticScroll {
+                    self.followHighlight = false
+                }
+            }
+        }
+
+        private func detach() {
+            if let scrollObserver {
+                NotificationCenter.default.removeObserver(scrollObserver)
+                self.scrollObserver = nil
+            }
+            observedScrollView = nil
+        }
     }
 }
 
