@@ -25,7 +25,7 @@ A macOS menu bar app that reads selected text aloud using OpenAI or ElevenLabs t
 | **TTS Providers** | OpenAI, ElevenLabs, or local Pocket TTS |
 | **AI Summarization** | Condense long texts before reading (GPT-5 Nano/Mini/5.2) |
 | **Translation** | Translate to English, Japanese, German, French, Spanish |
-| **CLI Tool** | `hibiki --text "Hello"` with `--summarize` and `--translate` flags |
+| **CLI Tool** | `hibiki --text "Hello"` or `hibiki --file-name README.md` with `--summarize` and `--translate` flags |
 | **History & Stats** | Track past requests and API usage costs |
 | **Audio Player UI** | Visual waveform display with playback speed control (1.0x-2.5x) |
 
@@ -94,7 +94,9 @@ The Hibiki app must be running. Use hotkeys (Option+F, Shift+Option+F) for GUI-b
 
 ```bash
 hibiki --text "Hello, world!"                        # Basic TTS
+hibiki --file-name README.md                         # Read from file
 hibiki --text "Long article..." --summarize          # Summarize + TTS
+hibiki --file-name Sources/HibikiCLI/HibikiCLI.swift --summarize # Summarize file + TTS
 hibiki --text "Long article..." --summarize --prompt "Summarize in 3 bullets." # Custom summary prompt
 hibiki --text "Hello" --translate ja                 # Translate + TTS
 hibiki --text "Article..." --summarize --translate fr # Full pipeline
@@ -102,6 +104,10 @@ hibiki --text "Article..." --summarize --translate fr # Full pipeline
 
 **Languages:** `en` (English), `ja` (Japanese), `de` (German), `fr` (French), `es` (Spanish)
 **Prompt override:** `--prompt` replaces the default summarization prompt (requires `--summarize`).
+**Input source:** use exactly one of `--text` or `--file-name`.
+**File decoding:** `--file-name` expects UTF-8 text files.
+**Markdown cleanup:** `.md` / `.markdown` files get balanced cleanup (frontmatter/comments removed, headings/lists normalized, links simplified, code fences converted for speech).
+**Input size limit:** request URL payload must stay under ~32KB after encoding; very large files should be summarized or split.
 
 ## Agent Integration
 

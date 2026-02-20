@@ -962,7 +962,7 @@ enum CLIInstallStatus {
         case .outdated:
             return "Update to link CLI to current app."
         case .installed:
-            return "Run: hibiki --text \"Hello!\""
+            return "Run: hibiki --text \"Hello!\" or hibiki --file-name README.md"
         }
     }
 

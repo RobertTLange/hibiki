@@ -160,7 +160,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         let alert = NSAlert()
         alert.messageText = "CLI Installed"
-        alert.informativeText = "The 'hibiki' command is now available. You can use it from any terminal:\n\nhibiki --text \"Hello, world!\""
+        alert.informativeText = """
+        The 'hibiki' command is now available. You can use it from any terminal:
+
+        hibiki --text "Hello, world!"
+        hibiki --file-name README.md
+        """
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
         alert.runModal()
