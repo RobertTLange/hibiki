@@ -19,7 +19,9 @@ struct HibikiCLI: ParsableCommand {
 
             Examples:
               hibiki --text "Hello world"
+              hibiki --file-name README.md
               hibiki --text "Long article..." --summarize
+              hibiki --file-name Sources/HibikiCLI/HibikiCLI.swift --summarize
               hibiki --text "Hello" --translate ja
               hibiki --text "Article..." --summarize --translate fr
               hibiki --text "Article..." --summarize --prompt "Summarize in 3 bullet points."
@@ -27,7 +29,10 @@ struct HibikiCLI: ParsableCommand {
     )
 
     @Option(name: .long, help: "Text to process")
-    var text: String
+    var text: String?
+
+    @Option(name: .long, help: "Path to text/markdown/code file to process")
+    var fileName: String?
 
     @Flag(name: .long, help: "Summarize the text before speaking")
     var summarize: Bool = false
@@ -39,16 +44,31 @@ struct HibikiCLI: ParsableCommand {
     var translate: String?
 
     mutating func validate() throws {
-        let request = CLIRequest(text: text, summarize: summarize, translate: translate, prompt: prompt)
         do {
+            let request = try buildRequest()
             try request.validate()
+        } catch let error as CLIInputError {
+            throw ValidationError(error.userMessage)
         } catch let error as CLIRequestError {
             throw ValidationError(error.userMessage)
         }
     }
 
     func run() throws {
-        let request = CLIRequest(text: text, summarize: summarize, translate: translate, prompt: prompt)
+        let request: CLIRequest
+        do {
+            request = try buildRequest()
+        } catch let error as CLIInputError {
+            fputs("Error: \(error.userMessage)\n", stderr)
+            throw ExitCode.failure
+        } catch let error as CLIRequestError {
+            fputs("Error: \(error.userMessage)\n", stderr)
+            throw ExitCode.failure
+        } catch {
+            fputs("Error: \(error.localizedDescription)\n", stderr)
+            throw ExitCode.failure
+        }
+
         let baseURL: URL
         do {
             baseURL = try request.url()
@@ -70,7 +90,7 @@ struct HibikiCLI: ParsableCommand {
 
         // Check URL length (practical limit ~32KB)
         if let urlString = requestURL.absoluteString.data(using: .utf8), urlString.count > 32000 {
-            fputs("Error: Text too long (exceeds 32KB after URL encoding)\n", stderr)
+            fputs("Error: Input too long for URL transport (~32KB after encoding). Try --summarize or split the file.\n", stderr)
             throw ExitCode(2)
         }
 
@@ -81,6 +101,11 @@ struct HibikiCLI: ParsableCommand {
 
         // Success - the app will handle the request
         print("Request sent to Hibiki")
+    }
+
+    private func buildRequest() throws -> CLIRequest {
+        let resolvedText = try CLIInputResolver.resolve(text: text, fileName: fileName)
+        return CLIRequest(text: resolvedText, summarize: summarize, translate: translate, prompt: prompt)
     }
 
     private func dispatchToHibikiApp(_ requestURL: URL) -> String? {
