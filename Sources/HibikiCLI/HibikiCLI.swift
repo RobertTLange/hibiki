@@ -69,6 +69,11 @@ struct HibikiCLI: ParsableCommand {
             throw ExitCode.failure
         }
 
+        if DoNotDisturbPolicy.isEnabled() {
+            print(DoNotDisturbPolicy.cliSuppressedNotice)
+            return
+        }
+
         let baseURL: URL
         do {
             baseURL = try request.url()

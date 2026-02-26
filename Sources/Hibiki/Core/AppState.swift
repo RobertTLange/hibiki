@@ -2,6 +2,7 @@ import SwiftUI
 import KeyboardShortcuts
 import NaturalLanguage
 import HibikiPocketRuntime
+import HibikiCLICore
 
 /// Position options for the audio player panel
 enum PanelPosition: String, CaseIterable, Identifiable {
@@ -78,6 +79,7 @@ final class AppState: ObservableObject {
     @Published var displayText: String = ""  // Text being spoken (raw/summarized/translated)
     @Published var activeHistoryReplayEntryId: UUID?
     @Published private(set) var pendingRequestCount: Int = 0
+    @Published private(set) var isDoNotDisturbEnabled: Bool = false
 
     @AppStorage("selectedVoice") var selectedVoice: String = TTSVoice.coral.rawValue
     @AppStorage("ttsProvider") var ttsProvider: String = TTSProvider.openAI.rawValue
@@ -206,6 +208,7 @@ final class AppState: ObservableObject {
     }
 
     private struct QueuedRequest {
+        let id: UUID = UUID()
         let source: RequestSource
         let text: String
         let shouldSummarize: Bool
@@ -311,7 +314,42 @@ final class AppState: ObservableObject {
         syncRequestQueueState()
     }
 
+    @MainActor
+    func setDoNotDisturbEnabled(_ enabled: Bool) {
+        guard enabled != isDoNotDisturbEnabled else { return }
+
+        isDoNotDisturbEnabled = enabled
+        DoNotDisturbPolicy.setEnabled(enabled)
+        logger.info("Do Not Disturb \(enabled ? "enabled" : "disabled")", source: "DND")
+
+        guard enabled else { return }
+
+        if isPlaying || isPaused || isLoading || isSummarizing || isTranslating || activeRequest != nil || !requestQueue.isEmpty {
+            logger.info("Do Not Disturb enabled during active work; stopping playback", source: "DND")
+            stopPlayback()
+        }
+    }
+
+    @MainActor
+    func toggleDoNotDisturb() {
+        setDoNotDisturbEnabled(!isDoNotDisturbEnabled)
+    }
+
+    @MainActor
+    private func shouldAllowRequest(_ source: RequestSource) -> Bool {
+        guard !isDoNotDisturbEnabled else {
+            logger.info("Ignored \(source.rawValue) request because Do Not Disturb is enabled", source: source.logSource)
+            errorMessage = DoNotDisturbPolicy.blockedRequestMessage
+            return false
+        }
+        return true
+    }
+
     init() {
+        // Always start each app launch with DND disabled.
+        isDoNotDisturbEnabled = false
+        DoNotDisturbPolicy.setEnabled(false)
+
         migrateSummarizationPromptIfNeeded()
         if elevenLabsVoiceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             elevenLabsVoiceID = "JBFqnCBsd6RMkjVDRZzb"
@@ -805,6 +843,7 @@ final class AppState: ObservableObject {
     @MainActor
     func handleHotkeyPressed() async {
         logger.debug("handleHotkeyPressed called", source: "AppState")
+        guard shouldAllowRequest(.manual) else { return }
 
         if isPaused {
             logger.info("Hotkey pressed while paused, resuming playback", source: "AppState")
@@ -824,6 +863,7 @@ final class AppState: ObservableObject {
     @MainActor
     func handleSummarizeTTSPressed() async {
         logger.debug("handleSummarizeTTSPressed called", source: "AppState")
+        guard shouldAllowRequest(.manual) else { return }
 
         if isPaused {
             logger.info("Summarize+TTS hotkey pressed while paused, resuming playback", source: "AppState")
@@ -843,6 +883,7 @@ final class AppState: ObservableObject {
     @MainActor
     func handleTranslateTTSPressed() async {
         logger.debug("handleTranslateTTSPressed called", source: "AppState")
+        guard shouldAllowRequest(.manual) else { return }
 
         if isPaused {
             logger.info("Translate+TTS hotkey pressed while paused, resuming playback", source: "AppState")
@@ -866,6 +907,7 @@ final class AppState: ObservableObject {
     @MainActor
     func handleSummarizeTranslateTTSPressed() async {
         logger.debug("handleSummarizeTranslateTTSPressed called", source: "AppState")
+        guard shouldAllowRequest(.manual) else { return }
 
         if isPaused {
             logger.info("Summarize+Translate+TTS hotkey pressed while paused, resuming playback", source: "AppState")
@@ -891,6 +933,7 @@ final class AppState: ObservableObject {
         shouldSummarize: Bool,
         targetLanguage: TargetLanguage?
     ) async {
+        guard shouldAllowRequest(.manual) else { return }
         requestPanelPinForManualSelection()
 
         do {
@@ -1212,6 +1255,8 @@ final class AppState: ObservableObject {
         targetLanguage: TargetLanguage?,
         summarizationPromptOverride: String?
     ) async {
+        guard shouldAllowRequest(.cli) else { return }
+
         enqueueRequest(
             source: .cli,
             text: text,
@@ -1225,6 +1270,17 @@ final class AppState: ObservableObject {
 
     @MainActor
     private func startQueuedRequest(_ request: QueuedRequest) async {
+        guard activeRequest?.id == request.id else {
+            logger.debug("Skipping stale queued request \(request.id)", source: request.source.logSource)
+            return
+        }
+
+        if (request.source == .manual || request.source == .cli), !shouldAllowRequest(request.source) {
+            logger.info("Dropping queued \(request.source.rawValue) request due to Do Not Disturb", source: request.source.logSource)
+            markRequestFinished()
+            return
+        }
+
         let source = request.source
         let logSource = source.logSource
         let text = request.text
