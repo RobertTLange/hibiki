@@ -22,7 +22,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "Hibiki",
-            dependencies: ["KeyboardShortcuts", "HibikiPocketRuntime"],
+            dependencies: ["KeyboardShortcuts", "HibikiPocketRuntime", "HibikiCLICore"],
             path: "Sources/Hibiki",
             exclude: ["Resources/Info.plist"],
             resources: [

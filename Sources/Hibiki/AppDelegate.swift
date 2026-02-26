@@ -7,6 +7,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
     private var menu: NSMenu!
+    private var doNotDisturbMenuItem: NSMenuItem?
+    private var doNotDisturbSwitch: NSSwitch?
     private var recentTracksHeaderMenuItem: NSMenuItem?
     private var recentTrackMenuItems: [NSMenuItem] = []
     private var mainWindow: NSWindow?
@@ -14,6 +16,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var panelVisibilityObserver: AnyCancellable?
     private var collapsedObserver: AnyCancellable?
     private var menuPlaybackObserver: AnyCancellable?
+    private var doNotDisturbObserver: AnyCancellable?
     private var historyEntriesObserver: AnyCancellable?
     private var manualPanelPinObserver: AnyCancellable?
     private var keyboardMonitor: Any?
@@ -214,6 +217,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(statusMenuItem)
 
         menu.addItem(NSMenuItem.separator())
+        let dndMenuItem = NSMenuItem()
+        dndMenuItem.view = makeDoNotDisturbMenuView()
+        menu.addItem(dndMenuItem)
+        doNotDisturbMenuItem = dndMenuItem
+
+        menu.addItem(NSMenuItem.separator())
         let recentTracksHeaderItem = NSMenuItem(title: "Recent Tracks", action: nil, keyEquivalent: "")
         recentTracksHeaderItem.isEnabled = false
         menu.addItem(recentTracksHeaderItem)
@@ -225,6 +234,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(NSMenuItem(title: "Quit Hibiki", action: #selector(quitApp), keyEquivalent: "q"))
 
         refreshRecentTrackMenuItems()
+        refreshDoNotDisturbMenuItem()
 
         statusItem.menu = menu
 
@@ -333,11 +343,49 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self?.refreshRecentTrackMenuItems()
             }
 
+        doNotDisturbObserver = AppState.shared.$isDoNotDisturbEnabled
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.refreshDoNotDisturbMenuItem()
+            }
+
         historyEntriesObserver = HistoryManager.shared.entriesDidChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in
                 self?.refreshRecentTrackMenuItems()
             }
+    }
+
+    @objc private func handleDoNotDisturbSwitchChanged(_ sender: NSSwitch) {
+        let isEnabled = sender.state == .on
+        Task { @MainActor in
+            AppState.shared.setDoNotDisturbEnabled(isEnabled)
+        }
+    }
+
+    private func makeDoNotDisturbMenuView() -> NSView {
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
+
+        let label = NSTextField(labelWithString: "Do Not Disturb")
+        label.frame = NSRect(x: 16, y: 4, width: 160, height: 16)
+        label.textColor = .labelColor
+        container.addSubview(label)
+
+        let toggle = NSSwitch(frame: NSRect(x: 196, y: 0, width: 50, height: 24))
+        toggle.controlSize = .small
+        toggle.target = self
+        toggle.action = #selector(handleDoNotDisturbSwitchChanged(_:))
+        container.addSubview(toggle)
+
+        doNotDisturbSwitch = toggle
+        return container
+    }
+
+    private func refreshDoNotDisturbMenuItem() {
+        guard let doNotDisturbMenuItem, let doNotDisturbSwitch else { return }
+        let enabled = AppState.shared.isDoNotDisturbEnabled
+        doNotDisturbMenuItem.state = .off
+        doNotDisturbSwitch.state = enabled ? .on : .off
     }
 
     private func refreshRecentTrackMenuItems() {
