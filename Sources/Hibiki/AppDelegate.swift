@@ -8,7 +8,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var popover: NSPopover!
     private var menu: NSMenu!
     private var doNotDisturbMenuItem: NSMenuItem?
-    private var doNotDisturbSwitch: NSSwitch?
     private var recentTracksHeaderMenuItem: NSMenuItem?
     private var recentTrackMenuItems: [NSMenuItem] = []
     private var mainWindow: NSWindow?
@@ -356,36 +355,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
     }
 
-    @objc private func handleDoNotDisturbSwitchChanged(_ sender: NSSwitch) {
-        let isEnabled = sender.state == .on
-        Task { @MainActor in
-            AppState.shared.setDoNotDisturbEnabled(isEnabled)
-        }
-    }
-
     private func makeDoNotDisturbMenuView() -> NSView {
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
-
-        let label = NSTextField(labelWithString: "Do Not Disturb")
-        label.frame = NSRect(x: 16, y: 4, width: 160, height: 16)
-        label.textColor = .labelColor
-        container.addSubview(label)
-
-        let toggle = NSSwitch(frame: NSRect(x: 196, y: 0, width: 50, height: 24))
-        toggle.controlSize = .small
-        toggle.target = self
-        toggle.action = #selector(handleDoNotDisturbSwitchChanged(_:))
-        container.addSubview(toggle)
-
-        doNotDisturbSwitch = toggle
-        return container
+        let hostingView = NSHostingView(
+            rootView: DoNotDisturbToggleRow(appState: AppState.shared)
+        )
+        hostingView.frame = NSRect(x: 0, y: 0, width: 250, height: 24)
+        return hostingView
     }
 
     private func refreshDoNotDisturbMenuItem() {
-        guard let doNotDisturbMenuItem, let doNotDisturbSwitch else { return }
-        let enabled = AppState.shared.isDoNotDisturbEnabled
-        doNotDisturbMenuItem.state = .off
-        doNotDisturbSwitch.state = enabled ? .on : .off
+        guard doNotDisturbMenuItem != nil else { return }
     }
 
     private func refreshRecentTrackMenuItems() {
@@ -869,6 +848,59 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let closingWindow = notification.object as? NSWindow,
            closingWindow == mainWindow {
             NSApp.setActivationPolicy(.accessory)
+        }
+    }
+}
+
+private struct DoNotDisturbToggleRow: View {
+    @ObservedObject var appState: AppState
+
+    var body: some View {
+        Toggle(
+            isOn: Binding(
+                get: { appState.isDoNotDisturbEnabled },
+                set: { enabled in
+                    Task { @MainActor in
+                        appState.setDoNotDisturbEnabled(enabled)
+                    }
+                }
+            )
+        ) {
+            Text("Do Not Disturb")
+                .foregroundColor(.primary)
+        }
+        .toggleStyle(BlueMenuSwitchToggleStyle())
+        .padding(.horizontal, 16)
+        .frame(width: 250, height: 24)
+    }
+}
+
+private struct BlueMenuSwitchToggleStyle: ToggleStyle {
+    private let onColor = Color(red: 0.0, green: 0.478, blue: 1.0)
+    private let offColor = Color(nsColor: .quaternaryLabelColor).opacity(0.8)
+
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 8) {
+            configuration.label
+            Spacer(minLength: 8)
+            Button {
+                configuration.isOn.toggle()
+            } label: {
+                Capsule(style: .continuous)
+                    .fill(configuration.isOn ? onColor : offColor)
+                    .frame(width: 38, height: 22)
+                    .overlay(alignment: configuration.isOn ? .trailing : .leading) {
+                        Circle()
+                            .fill(Color.white)
+                            .frame(width: 18, height: 18)
+                            .shadow(color: .black.opacity(0.18), radius: 0.5, x: 0, y: 0.5)
+                            .padding(2)
+                    }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text("Do Not Disturb"))
+            .accessibilityValue(configuration.isOn ? "On" : "Off")
+            .animation(.easeInOut(duration: 0.12), value: configuration.isOn)
         }
     }
 }
