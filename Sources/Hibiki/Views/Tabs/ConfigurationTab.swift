@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import KeyboardShortcuts
 import HibikiPocketRuntime
+import HibikiShared
 
 struct ConfigurationTab: View {
     @EnvironmentObject var appState: AppState
@@ -431,12 +432,15 @@ struct ConfigurationTab: View {
                                 Text("Speed:")
 
                                 Slider(
-                                    value: $appState.playbackSpeed,
-                                    in: 1.0...2.5,
-                                    step: 0.1
+                                    value: Binding(
+                                        get: { appState.playbackSpeed },
+                                        set: { appState.updatePlaybackSpeed($0) }
+                                    ),
+                                    in: PlaybackSettings.speedRange,
+                                    step: PlaybackSettings.speedStep
                                 )
 
-                                Text(String(format: "%.1fx", appState.playbackSpeed))
+                                Text(PlaybackSettings.speedLabel(for: appState.playbackSpeed))
                                     .font(.system(.body, design: .monospaced))
                                     .frame(width: 45, alignment: .trailing)
                             }
@@ -444,7 +448,7 @@ struct ConfigurationTab: View {
                             HStack(spacing: 8) {
                                 ForEach([1.0, 1.5, 2.0, 2.5], id: \.self) { speed in
                                     Button(String(format: "%.1fx", speed)) {
-                                        appState.playbackSpeed = speed
+                                        appState.updatePlaybackSpeed(speed)
                                     }
                                     .buttonStyle(.bordered)
                                     .controlSize(.small)
