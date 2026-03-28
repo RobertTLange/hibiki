@@ -2,12 +2,12 @@ import Cocoa
 import SwiftUI
 import KeyboardShortcuts
 import Combine
+import HibikiShared
 
 class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
     private var menu: NSMenu!
-    private var doNotDisturbMenuItem: NSMenuItem?
     private var recentTracksHeaderMenuItem: NSMenuItem?
     private var recentTrackMenuItems: [NSMenuItem] = []
     private var mainWindow: NSWindow?
@@ -15,7 +15,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var panelVisibilityObserver: AnyCancellable?
     private var collapsedObserver: AnyCancellable?
     private var menuPlaybackObserver: AnyCancellable?
-    private var doNotDisturbObserver: AnyCancellable?
     private var historyEntriesObserver: AnyCancellable?
     private var manualPanelPinObserver: AnyCancellable?
     private var keyboardMonitor: Any?
@@ -216,10 +215,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(statusMenuItem)
 
         menu.addItem(NSMenuItem.separator())
-        let dndMenuItem = NSMenuItem()
-        dndMenuItem.view = makeDoNotDisturbMenuView()
-        menu.addItem(dndMenuItem)
-        doNotDisturbMenuItem = dndMenuItem
+        let playbackControlsMenuItem = NSMenuItem()
+        playbackControlsMenuItem.view = makePlaybackControlsMenuView()
+        menu.addItem(playbackControlsMenuItem)
 
         menu.addItem(NSMenuItem.separator())
         let recentTracksHeaderItem = NSMenuItem(title: "Recent Tracks", action: nil, keyEquivalent: "")
@@ -233,7 +231,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(NSMenuItem(title: "Quit Hibiki", action: #selector(quitApp), keyEquivalent: "q"))
 
         refreshRecentTrackMenuItems()
-        refreshDoNotDisturbMenuItem()
 
         statusItem.menu = menu
 
@@ -342,12 +339,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self?.refreshRecentTrackMenuItems()
             }
 
-        doNotDisturbObserver = AppState.shared.$isDoNotDisturbEnabled
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.refreshDoNotDisturbMenuItem()
-            }
-
         historyEntriesObserver = HistoryManager.shared.entriesDidChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in
@@ -355,16 +346,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
     }
 
-    private func makeDoNotDisturbMenuView() -> NSView {
+    private func makePlaybackControlsMenuView() -> NSView {
         let hostingView = NSHostingView(
-            rootView: DoNotDisturbToggleRow(appState: AppState.shared)
+            rootView: MenuPlaybackControlsView(appState: AppState.shared)
         )
-        hostingView.frame = NSRect(x: 0, y: 0, width: 250, height: 24)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 264, height: 92)
         return hostingView
-    }
-
-    private func refreshDoNotDisturbMenuItem() {
-        guard doNotDisturbMenuItem != nil else { return }
     }
 
     private func refreshRecentTrackMenuItems() {
@@ -852,26 +839,72 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 }
 
-private struct DoNotDisturbToggleRow: View {
+private struct MenuPlaybackControlsView: View {
     @ObservedObject var appState: AppState
+    private let labelWidth: CGFloat = 56
 
     var body: some View {
-        Toggle(
-            isOn: Binding(
-                get: { appState.isDoNotDisturbEnabled },
-                set: { enabled in
-                    Task { @MainActor in
-                        appState.setDoNotDisturbEnabled(enabled)
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(
+                isOn: Binding(
+                    get: { appState.isDoNotDisturbEnabled },
+                    set: { enabled in
+                        Task { @MainActor in
+                            appState.setDoNotDisturbEnabled(enabled)
+                        }
                     }
-                }
-            )
-        ) {
-            Text("Do Not Disturb")
-                .foregroundColor(.primary)
+                )
+            ) {
+                Text("Do Not Disturb")
+                    .foregroundColor(.primary)
+            }
+            .toggleStyle(BlueMenuSwitchToggleStyle())
+            .accessibilityElement(children: .contain)
+
+            HStack(spacing: 8) {
+                Text("Speed")
+                    .foregroundColor(.primary)
+                    .frame(width: labelWidth, alignment: .leading)
+
+                Slider(
+                    value: Binding(
+                        get: { appState.playbackSpeed },
+                        set: { appState.updatePlaybackSpeed($0) }
+                    ),
+                    in: PlaybackSettings.speedRange,
+                    step: PlaybackSettings.speedStep
+                )
+
+                Text(PlaybackSettings.speedLabel(for: appState.playbackSpeed))
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .frame(width: 36, alignment: .trailing)
+            }
+
+            HStack(spacing: 8) {
+                Text("Volume")
+                    .foregroundColor(.primary)
+                    .frame(width: labelWidth, alignment: .leading)
+
+                FlatSlider(
+                    value: Binding(
+                        get: { appState.playbackVolume },
+                        set: { appState.updatePlaybackVolume($0) }
+                    ),
+                    range: 0.0...AppState.maxPlaybackVolume,
+                    step: 0.01
+                )
+                .frame(height: 12)
+
+                Text("\(Int(appState.playbackVolume * 100))%")
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .frame(width: 44, alignment: .trailing)
+            }
         }
-        .toggleStyle(BlueMenuSwitchToggleStyle())
         .padding(.horizontal, 16)
-        .frame(width: 250, height: 24)
+        .padding(.vertical, 8)
+        .frame(width: 264)
     }
 }
 
