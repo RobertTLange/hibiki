@@ -1,4 +1,5 @@
 import SwiftUI
+import HibikiShared
 
 struct AudioPlayerPanel: View {
     @EnvironmentObject var appState: AppState
@@ -196,12 +197,12 @@ struct AudioPlayerPanel: View {
                         get: { appState.playbackSpeed },
                         set: { appState.updatePlaybackSpeed($0) }
                     ),
-                    in: 1.0...2.5,
-                    step: 0.1
+                    in: PlaybackSettings.speedRange,
+                    step: PlaybackSettings.speedStep
                 )
                 .controlSize(.small)
                 
-                Text(String(format: "%.1fx", appState.playbackSpeed))
+                Text(PlaybackSettings.speedLabel(for: appState.playbackSpeed))
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .foregroundColor(.primary)
                     .frame(width: 36, alignment: .trailing)

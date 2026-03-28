@@ -3,6 +3,7 @@ import KeyboardShortcuts
 import NaturalLanguage
 import HibikiPocketRuntime
 import HibikiCLICore
+import HibikiShared
 
 /// Position options for the audio player panel
 enum PanelPosition: String, CaseIterable, Identifiable {
@@ -375,7 +376,13 @@ final class AppState: ObservableObject {
         if pocketManagedVenvPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             pocketManagedVenvPath = PocketTTSRuntimeManager.defaultVenvPath()
         }
-        let clampedVolume = min(Self.maxPlaybackVolume, max(0.0, playbackVolume))
+        let clampedSpeed = PlaybackSettings.clampedSpeed(playbackSpeed)
+        if clampedSpeed != playbackSpeed {
+            playbackSpeed = clampedSpeed
+        }
+        audioPlayer.playbackSpeed = Float(clampedSpeed)
+
+        let clampedVolume = PlaybackSettings.clampedVolume(playbackVolume, maxVolume: Self.maxPlaybackVolume)
         if clampedVolume != playbackVolume {
             playbackVolume = clampedVolume
         }
@@ -964,9 +971,10 @@ final class AppState: ObservableObject {
 
     /// Update playback speed in real-time (also persists the setting)
     func updatePlaybackSpeed(_ speed: Double) {
-        playbackSpeed = speed
-        audioPlayer.playbackSpeed = Float(speed)
-        logger.debug("Playback speed updated to \(speed)x", source: "AppState")
+        let clamped = PlaybackSettings.clampedSpeed(speed)
+        playbackSpeed = clamped
+        audioPlayer.playbackSpeed = Float(clamped)
+        logger.debug("Playback speed updated to \(clamped)x", source: "AppState")
     }
 
     @MainActor
@@ -1031,7 +1039,7 @@ final class AppState: ObservableObject {
 
     /// Update playback volume in real-time (also persists the setting)
     func updatePlaybackVolume(_ volume: Double) {
-        let clamped = min(Self.maxPlaybackVolume, max(0.0, volume))
+        let clamped = PlaybackSettings.clampedVolume(volume, maxVolume: Self.maxPlaybackVolume)
         playbackVolume = clamped
         audioPlayer.playbackVolume = Float(clamped)
         logger.debug("Playback volume updated to \(Int(clamped * 100))%", source: "AppState")

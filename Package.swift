@@ -16,13 +16,18 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "HibikiShared",
+            dependencies: [],
+            path: "Sources/HibikiShared"
+        ),
+        .target(
             name: "HibikiPocketRuntime",
             dependencies: [],
             path: "Sources/HibikiPocketRuntime"
         ),
         .executableTarget(
             name: "Hibiki",
-            dependencies: ["KeyboardShortcuts", "HibikiPocketRuntime", "HibikiCLICore"],
+            dependencies: ["KeyboardShortcuts", "HibikiPocketRuntime", "HibikiCLICore", "HibikiShared"],
             path: "Sources/Hibiki",
             exclude: ["Resources/Info.plist"],
             resources: [
@@ -38,7 +43,7 @@ let package = Package(
         ),
         .testTarget(
             name: "HibikiTests",
-            dependencies: ["HibikiPocketRuntime", "HibikiCLICore"],
+            dependencies: ["HibikiShared", "HibikiPocketRuntime", "HibikiCLICore"],
             path: "Tests/HibikiTests"
         ),
         .executableTarget(
