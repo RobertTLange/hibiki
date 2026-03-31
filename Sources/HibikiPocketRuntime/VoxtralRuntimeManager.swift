@@ -50,13 +50,13 @@ public final class VoxtralRuntimeManager: ObservableObject {
     private var launchConfig: ServerLaunchConfig?
 
     public static var backendKind: BackendKind {
-#if os(Linux)
-        .vllmOmniLinux
-#elseif os(macOS) && arch(arm64)
-        .mlxAudioAppleSilicon
-#else
-        .unsupported
-#endif
+        if isLinux {
+            return .vllmOmniLinux
+        }
+        if isAppleSiliconMac {
+            return .mlxAudioAppleSilicon
+        }
+        return .unsupported
     }
 
     public static var isManagedRuntimeSupportedOnCurrentPlatform: Bool {
@@ -64,13 +64,13 @@ public final class VoxtralRuntimeManager: ObservableObject {
     }
 
     public static var unsupportedPlatformDescription: String {
-#if os(macOS)
-        "this Mac configuration"
-#elseif os(Linux)
-        "Linux"
-#else
-        "this platform"
-#endif
+        if isLinux {
+            return "Linux"
+        }
+        if isMacOS {
+            return "this Mac configuration"
+        }
+        return "this platform"
     }
 
     public static var backendDisplayName: String {
@@ -108,6 +108,37 @@ public final class VoxtralRuntimeManager: ObservableObject {
 
     public var isRunning: Bool {
         serverProcess?.isRunning == true && status == .running
+    }
+
+    private static var isLinux: Bool {
+#if os(Linux)
+        true
+#else
+        false
+#endif
+    }
+
+    private static var isMacOS: Bool {
+#if os(macOS)
+        true
+#else
+        false
+#endif
+    }
+
+    private static var isAppleSiliconMac: Bool {
+#if os(macOS)
+        return sysctlFlag(named: "hw.optional.arm64") == 1
+#else
+        return false
+#endif
+    }
+
+    private static func sysctlFlag(named name: String) -> Int32 {
+        var value: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        let result = sysctlbyname(name, &value, &size, nil, 0)
+        return result == 0 ? value : 0
     }
 
     public func hasInstalledRuntime(venvPath: String? = nil) -> Bool {
