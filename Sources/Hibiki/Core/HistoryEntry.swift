@@ -1,4 +1,5 @@
 import Foundation
+import HibikiShared
 
 struct HistoryEntry: Identifiable, Codable, Sendable {
     let id: UUID
@@ -69,7 +70,7 @@ struct HistoryEntry: Identifiable, Codable, Sendable {
         self.targetLanguage = targetLanguage
 
         // Local providers are free from API billing perspective.
-        if voice.hasPrefix("pocket:") {
+        if LocalTTSVoiceLabel.isLocal(voice) {
             self.ttsCost = 0
         } else {
             self.ttsCost = TTSPricing.calculateCost(inputTokens: inputTokens)
@@ -134,8 +135,11 @@ struct HistoryEntry: Identifiable, Codable, Sendable {
         if voice.hasPrefix("elevenlabs:") {
             return .elevenLabs
         }
-        if voice.hasPrefix("pocket:") {
+        if LocalTTSVoiceLabel.isPocket(voice) {
             return .pocketLocal
+        }
+        if LocalTTSVoiceLabel.isMistral(voice) {
+            return .mistralLocal
         }
         return .openAI
     }

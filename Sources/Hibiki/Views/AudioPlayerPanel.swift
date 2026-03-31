@@ -322,6 +322,8 @@ struct AudioPlayerPanel: View {
         switch provider {
         case .pocketLocal:
             return "Pocket TTS"
+        case .mistralLocal:
+            return "Mistral Voxtral"
         default:
             return provider.displayName
         }

@@ -9,7 +9,7 @@
 |_| |_|_|_.__/|_|_|\_\_|      |   |   |   (O)   |   |   |
 ```
 
-A macOS menu bar app that reads selected text aloud using OpenAI or ElevenLabs text-to-speech APIs. Built for agentic workflows, Hibiki supports global hotkeys, streaming audio playback, and a CLI (`hibiki --text "Hello"`) so text from editors, browsers, and terminal sessions can be spoken instantly. Agent integration is a core feature: the repo includes ready-to-use skill and hook files so coding agents can trigger speech and spoken summaries directly from workflows. Hibiki also supports optional AI summarization and translation before playback, plus history and usage tracking.
+A macOS menu bar app that reads selected text aloud using OpenAI, ElevenLabs, or self-hosted local TTS endpoints. Built for agentic workflows, Hibiki supports global hotkeys, streaming audio playback, and a CLI (`hibiki --text "Hello"`) so text from editors, browsers, and terminal sessions can be spoken instantly. Agent integration is a core feature: the repo includes ready-to-use skill and hook files so coding agents can trigger speech and spoken summaries directly from workflows. Hibiki also supports optional AI summarization and translation before playback, plus history and usage tracking.
 
 **Blog walkthrough:** [How I Built Hibiki](https://roberttlange.com/index.html#posts/blog/02-hibiki-tts.md)
 
@@ -22,7 +22,7 @@ A macOS menu bar app that reads selected text aloud using OpenAI or ElevenLabs t
 | **Agent Integration** | Built-in skill + hook templates for agent-driven spoken output |
 | **Global Hotkeys** | Option+F for TTS, Shift+Option+F for Summarize+TTS |
 | **Streaming Audio** | Audio plays as it's generated for fast response |
-| **TTS Providers** | OpenAI, ElevenLabs, or local Pocket TTS |
+| **TTS Providers** | OpenAI, ElevenLabs, local Pocket TTS, or self-hosted Mistral Voxtral |
 | **AI Summarization** | Condense long texts before reading (GPT-5 Nano/Mini/5.2) |
 | **Translation** | Translate to English, Japanese, German, French, Spanish |
 | **CLI Tool** | `hibiki --text "Hello"` or `hibiki --file-name README.md` with `--summarize` and `--translate` flags |
@@ -68,6 +68,9 @@ Set env vars through `launchctl` for GUI app visibility:
 launchctl setenv OPENAI_API_KEY "sk-..."
 launchctl setenv ELEVENLABS_API_KEY "..."
 launchctl setenv POCKET_TTS_BASE_URL "http://127.0.0.1:8000"
+launchctl setenv MISTRAL_TTS_BASE_URL "http://127.0.0.1:8091"
+launchctl setenv MISTRAL_TTS_API_KEY "optional-local-token"
+launchctl setenv MISTRAL_TTS_MODEL_ID "mistralai/Voxtral-4B-TTS-2603"
 ```
 
 Remove them later with `launchctl unsetenv <NAME>`.
@@ -87,6 +90,43 @@ Integration note: Hibiki uses a managed local Pocket TTS runtime (install/start/
 Official Pocket TTS repository: [kyutai-labs/pocket-tts](https://github.com/kyutai-labs/pocket-tts)
 
 Note: Pocket local mode is currently English-only in Hibiki.
+
+### Local Mistral Voxtral TTS
+
+Hibiki can target `mistralai/Voxtral-4B-TTS-2603` either through a manual OpenAI-compatible endpoint or a managed local runtime.
+
+Managed mode is backend-dependent:
+- On Apple Silicon macOS, Hibiki installs `mlx-audio[all]` and runs `mlx_audio.server` locally with the MLX-converted model `mlx-community/Voxtral-4B-TTS-2603-mlx-bf16`.
+- On Linux GPU hosts, Hibiki installs `vllm>=0.18.0` plus `vllm-omni` and launches `vllm serve mistralai/Voxtral-4B-TTS-2603 --omni`.
+
+#### Managed Voxtral runtime
+
+1. Open **Settings → Configuration → Local Voxtral TTS (Managed)**.
+2. Enable managed runtime.
+3. Click **Install / Reinstall**.
+4. Click **Start** (or enable auto-start).
+5. Select provider **Mistral Voxtral (Local)** in the Text to Speech section.
+
+Default managed endpoint: `http://127.0.0.1:8091`
+
+Note: Managed Voxtral on Mac requires Apple Silicon because the local path uses MLX. If managed install or launch fails on your host, Hibiki will surface the runtime error and you can still use manual endpoint mode.
+
+#### Manual Voxtral endpoint
+
+1. Start a compatible server, for example:
+
+```bash
+vllm serve mistralai/Voxtral-4B-TTS-2603 --omni
+```
+
+2. Open **Settings → Text to Speech**.
+3. Select provider **Mistral Voxtral (Local)**.
+4. Set the base URL, model ID, and voice preset if needed.
+5. Optionally set `MISTRAL_TTS_BASE_URL`, `MISTRAL_TTS_MODEL_ID`, and `MISTRAL_TTS_API_KEY` via `launchctl`.
+
+Hibiki sends requests to `/v1/audio/speech` and converts the returned WAV audio for playback.
+
+Official model card: [mistralai/Voxtral-4B-TTS-2603](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603)
 
 ## CLI Usage
 
@@ -148,6 +188,9 @@ Then merge `agents/hooks.json` into your `~/.claude/settings.json`.
 | "No OpenAI API key configured" | Add key in Settings, or run `launchctl setenv OPENAI_API_KEY "sk-..."` |
 | "No ElevenLabs API key configured" | Add key in Settings, or run `launchctl setenv ELEVENLABS_API_KEY "..."` |
 | "uv was not found" | Install `uv` and retry Pocket managed install |
+| "Managed Voxtral runtime is not supported on this Mac configuration" | Use Apple Silicon for the local MLX path, or run Voxtral on a separate Linux GPU host and use manual endpoint mode |
+| "Voxtral install failed" | Ensure the host can run `vllm` / `vllm-omni`, then retry the managed install or use manual endpoint mode |
+| "Invalid API URL" with Mistral Voxtral | Verify the base URL points at a compatible server exposing `/v1/audio/speech` |
 | Chrome not capturing text | Hibiki auto-falls back to clipboard (Cmd+C) |
 
 Debug logs available in Settings → Debug tab.
@@ -174,7 +217,7 @@ Sources/
     │   ├── TextChunker.swift        # Long text chunking
     │   └── UsageStatistics.swift    # Usage tracking
     ├── Audio/
-    │   ├── TTSService.swift         # OpenAI + ElevenLabs TTS API client
+    │   ├── TTSService.swift         # OpenAI + ElevenLabs + local Pocket/Voxtral TTS client
     │   ├── WAVStreamDecoder.swift   # Streaming WAV -> PCM decoder for local Pocket TTS
     │   ├── StreamingAudioPlayer.swift   # PCM audio playback
     │   └── AudioLevelMonitor.swift  # Audio level monitoring for waveform
