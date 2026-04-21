@@ -111,7 +111,7 @@ hibiki --text "Article..." --summarize --translate fr # Full pipeline
 
 ## Agent Integration
 
-See the `agents/` directory for integration files.
+See [`skills/hibiki-tts/`](skills/hibiki-tts/) for integration files.
 
 ### Skill
 
@@ -119,7 +119,13 @@ Add Hibiki as a Claude Code skill so Claude can speak text aloud:
 
 ```bash
 mkdir -p ~/.claude/skills/tts-hibiki
-cp agents/SKILL.md ~/.claude/skills/tts-hibiki/SKILL.md
+cp skills/hibiki-tts/SKILL.md ~/.claude/skills/tts-hibiki/SKILL.md
+```
+
+Install directly via `npx`:
+
+```bash
+TARGET_DIR="$HOME/.claude/skills/tts-hibiki" npx --yes zx -e 'const fs=require("node:fs/promises"),path=require("node:path");const target=process.env.TARGET_DIR;await fs.mkdir(target,{recursive:true});const res=await fetch("https://raw.githubusercontent.com/RobertTLange/hibiki/main/skills/hibiki-tts/SKILL.md");if(!res.ok)throw new Error(`Failed to download SKILL.md: ${res.status}`);await fs.writeFile(path.join(target,"SKILL.md"),await res.text(),"utf8")'
 ```
 
 ### Hook
@@ -127,11 +133,11 @@ cp agents/SKILL.md ~/.claude/skills/tts-hibiki/SKILL.md
 Automatically speak Claude's final response when a session ends:
 
 ```bash
-cp agents/speak-summary.sh ~/.claude/hooks/
+cp skills/hibiki-tts/speak-summary.sh ~/.claude/hooks/
 chmod +x ~/.claude/hooks/speak-summary.sh
 ```
 
-Then merge `agents/hooks.json` into your `~/.claude/settings.json`.
+Then merge `skills/hibiki-tts/hooks.json` into your `~/.claude/settings.json`.
 
 ## Security
 
