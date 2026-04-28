@@ -91,6 +91,17 @@ final class AppState: ObservableObject {
     @AppStorage("pocketBaseURL") var pocketBaseURL: String = TTSConfiguration.defaultPocketBaseURL
     @AppStorage("pocketVoiceURL") var pocketVoiceURL: String = TTSConfiguration.defaultPocketVoiceURL
     @AppStorage("pocketRequestTimeoutSec") var pocketRequestTimeoutSec: Double = TTSConfiguration.defaultPocketRequestTimeoutSec
+    @AppStorage("mistralLocalBaseURL") var mistralLocalBaseURL: String = TTSConfiguration.defaultMistralLocalBaseURL
+    @AppStorage("mistralLocalAPIKey") var mistralLocalAPIKey: String = ""
+    @AppStorage("mistralLocalModelID") var mistralLocalModelID: String = TTSConfiguration.defaultMistralLocalModelID
+    @AppStorage("mistralLocalVoice") var mistralLocalVoice: String = TTSConfiguration.defaultMistralLocalVoice
+    @AppStorage("mistralLocalRequestTimeoutSec") var mistralLocalRequestTimeoutSec: Double = TTSConfiguration.defaultMistralLocalRequestTimeoutSec
+    @AppStorage("mistralManagedEnabled") var mistralManagedEnabled: Bool = false
+    @AppStorage("mistralManagedAutoStart") var mistralManagedAutoStart: Bool = true
+    @AppStorage("mistralManagedHost") var mistralManagedHost: String = "127.0.0.1"
+    @AppStorage("mistralManagedPort") var mistralManagedPort: Int = 8091
+    @AppStorage("mistralManagedVenvPath") var mistralManagedVenvPath: String = VoxtralRuntimeManager.defaultVenvPath()
+    @AppStorage("mistralManagedLastError") var mistralManagedLastError: String = ""
     @AppStorage("pocketManagedEnabled") var pocketManagedEnabled: Bool = false
     @AppStorage("pocketManagedAutoStart") var pocketManagedAutoStart: Bool = true
     @AppStorage("pocketManagedHost") var pocketManagedHost: String = "127.0.0.1"
@@ -169,6 +180,7 @@ final class AppState: ObservableObject {
     private let audioPlayer = StreamingAudioPlayer.shared
     private let accessibilityManager = AccessibilityManager.shared
     let pocketRuntimeManager = PocketTTSRuntimeManager.shared
+    let voxtralRuntimeManager = VoxtralRuntimeManager.shared
     private var summarizationTask: Task<Void, Never>?
     private var translationTask: Task<Void, Never>?
     private let interleavedPipeline = InterleavedPipeline()
@@ -368,13 +380,31 @@ final class AppState: ObservableObject {
             elevenLabsAPIKey = envKey
             logger.info("Loaded ElevenLabs API key from ELEVENLABS_API_KEY via \(source.rawValue)", source: "AppState")
         }
+        if let (envKey, source) = resolvedEnvironmentValue(for: "MISTRAL_TTS_API_KEY", logSource: "AppState"),
+           mistralLocalAPIKey != envKey {
+            mistralLocalAPIKey = envKey
+            logger.info("Loaded Mistral TTS API key from MISTRAL_TTS_API_KEY via \(source.rawValue)", source: "AppState")
+        }
         if pocketBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            let (envBaseURL, source) = resolvedEnvironmentValue(for: "POCKET_TTS_BASE_URL", logSource: "AppState") {
             pocketBaseURL = envBaseURL
             logger.info("Loaded Pocket TTS base URL from POCKET_TTS_BASE_URL via \(source.rawValue)", source: "AppState")
         }
+        if mistralLocalBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let (envBaseURL, source) = resolvedEnvironmentValue(for: "MISTRAL_TTS_BASE_URL", logSource: "AppState") {
+            mistralLocalBaseURL = envBaseURL
+            logger.info("Loaded Mistral TTS base URL from MISTRAL_TTS_BASE_URL via \(source.rawValue)", source: "AppState")
+        }
+        if let (envModelID, source) = resolvedEnvironmentValue(for: "MISTRAL_TTS_MODEL_ID", logSource: "AppState"),
+           mistralLocalModelID != envModelID {
+            mistralLocalModelID = envModelID
+            logger.info("Loaded Mistral TTS model ID from MISTRAL_TTS_MODEL_ID via \(source.rawValue)", source: "AppState")
+        }
         if pocketManagedVenvPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             pocketManagedVenvPath = PocketTTSRuntimeManager.defaultVenvPath()
+        }
+        if mistralManagedVenvPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            mistralManagedVenvPath = VoxtralRuntimeManager.defaultVenvPath()
         }
         let clampedSpeed = PlaybackSettings.clampedSpeed(playbackSpeed)
         if clampedSpeed != playbackSpeed {
@@ -395,6 +425,13 @@ final class AppState: ObservableObject {
            activeTTSProvider() == .pocketLocal {
             Task { @MainActor [weak self] in
                 await self?.ensurePocketRuntimeStarted(logSource: "AppState")
+            }
+        }
+        if mistralManagedModeEnabled,
+           mistralManagedAutoStart,
+           activeTTSProvider() == .mistralLocal {
+            Task { @MainActor [weak self] in
+                await self?.ensureMistralRuntimeStarted(logSource: "AppState")
             }
         }
     }
@@ -510,8 +547,73 @@ final class AppState: ObservableObject {
         return nil
     }
 
+    private func resolveMistralLocalAPIKey(logSource: String) -> String {
+        if let (envKey, source) = resolvedEnvironmentValue(for: "MISTRAL_TTS_API_KEY", logSource: logSource) {
+            if mistralLocalAPIKey != envKey {
+                mistralLocalAPIKey = envKey
+                logger.info("Loaded Mistral TTS API key from MISTRAL_TTS_API_KEY via \(source.rawValue)", source: logSource)
+            }
+            return envKey
+        }
+
+        return normalizedEnvironmentValue(mistralLocalAPIKey) ?? ""
+    }
+
+    private func resolveMistralLocalBaseURL(logSource: String) -> String {
+        if mistralManagedModeEnabled {
+            return managedMistralBaseURL()
+        }
+
+        let configuredBaseURL = mistralLocalBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !configuredBaseURL.isEmpty {
+            return configuredBaseURL
+        }
+
+        if let (envURL, source) = resolvedEnvironmentValue(for: "MISTRAL_TTS_BASE_URL", logSource: logSource) {
+            mistralLocalBaseURL = envURL
+            logger.info("Loaded Mistral TTS base URL from MISTRAL_TTS_BASE_URL via \(source.rawValue)", source: logSource)
+            return envURL
+        }
+
+        return TTSConfiguration.defaultMistralLocalBaseURL
+    }
+
+    private func resolveMistralLocalModelID(logSource: String) -> String {
+        let configuredModelID = mistralLocalModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !configuredModelID.isEmpty {
+            if mistralManagedModeEnabled,
+               VoxtralRuntimeManager.backendKind == .mlxAudioAppleSilicon,
+               configuredModelID == TTSConfiguration.defaultMistralLocalModelID {
+                mistralLocalModelID = VoxtralRuntimeManager.defaultManagedModelID
+                logger.info("Migrated managed Voxtral model ID to Apple Silicon MLX variant", source: logSource)
+                return VoxtralRuntimeManager.defaultManagedModelID
+            }
+            return configuredModelID
+        }
+
+        if let (envModelID, source) = resolvedEnvironmentValue(for: "MISTRAL_TTS_MODEL_ID", logSource: logSource) {
+            mistralLocalModelID = envModelID
+            logger.info("Loaded Mistral TTS model ID from MISTRAL_TTS_MODEL_ID via \(source.rawValue)", source: logSource)
+            return envModelID
+        }
+
+        if mistralManagedModeEnabled {
+            return VoxtralRuntimeManager.defaultManagedModelID
+        }
+
+        return TTSConfiguration.defaultMistralLocalModelID
+    }
+
     private func managedPocketBaseURL() -> String {
         PocketTTSRuntimeManager.baseURL(host: pocketManagedHost, port: pocketManagedPort)
+    }
+
+    private func managedMistralBaseURL() -> String {
+        VoxtralRuntimeManager.baseURL(host: mistralManagedHost, port: mistralManagedPort)
+    }
+
+    private var mistralManagedModeEnabled: Bool {
+        mistralManagedEnabled && VoxtralRuntimeManager.isManagedRuntimeSupportedOnCurrentPlatform
     }
 
     private func effectivePocketVoice() -> String {
@@ -564,6 +666,11 @@ final class AppState: ObservableObject {
                 pocketBaseURL: pocketBaseURL,
                 pocketVoiceURL: pocketVoiceURL,
                 pocketRequestTimeoutSec: pocketRequestTimeoutSec,
+                mistralLocalBaseURL: mistralLocalBaseURL,
+                mistralLocalAPIKey: mistralLocalAPIKey,
+                mistralLocalModelID: mistralLocalModelID,
+                mistralLocalVoice: mistralLocalVoice,
+                mistralLocalRequestTimeoutSec: mistralLocalRequestTimeoutSec,
                 instructions: TTSConfiguration.defaultInstructions
             )
 
@@ -591,6 +698,11 @@ final class AppState: ObservableObject {
                 pocketBaseURL: pocketBaseURL,
                 pocketVoiceURL: pocketVoiceURL,
                 pocketRequestTimeoutSec: pocketRequestTimeoutSec,
+                mistralLocalBaseURL: mistralLocalBaseURL,
+                mistralLocalAPIKey: mistralLocalAPIKey,
+                mistralLocalModelID: mistralLocalModelID,
+                mistralLocalVoice: mistralLocalVoice,
+                mistralLocalRequestTimeoutSec: mistralLocalRequestTimeoutSec,
                 instructions: TTSConfiguration.defaultInstructions
             )
 
@@ -611,6 +723,30 @@ final class AppState: ObservableObject {
                 pocketBaseURL: baseURL,
                 pocketVoiceURL: effectivePocketVoice(),
                 pocketRequestTimeoutSec: pocketRequestTimeoutSec,
+                mistralLocalBaseURL: mistralLocalBaseURL,
+                mistralLocalAPIKey: mistralLocalAPIKey,
+                mistralLocalModelID: mistralLocalModelID,
+                mistralLocalVoice: mistralLocalVoice,
+                mistralLocalRequestTimeoutSec: mistralLocalRequestTimeoutSec,
+                instructions: TTSConfiguration.defaultInstructions
+            )
+
+        case .mistralLocal:
+            return TTSConfiguration(
+                provider: .mistralLocal,
+                openAIAPIKey: openAIAPIKeyOverride ?? "",
+                openAIVoice: openAIVoice,
+                elevenLabsAPIKey: "",
+                elevenLabsVoiceID: "",
+                elevenLabsModelID: elevenLabsModelID,
+                pocketBaseURL: pocketBaseURL,
+                pocketVoiceURL: pocketVoiceURL,
+                pocketRequestTimeoutSec: pocketRequestTimeoutSec,
+                mistralLocalBaseURL: resolveMistralLocalBaseURL(logSource: logSource),
+                mistralLocalAPIKey: resolveMistralLocalAPIKey(logSource: logSource),
+                mistralLocalModelID: resolveMistralLocalModelID(logSource: logSource),
+                mistralLocalVoice: mistralLocalVoice,
+                mistralLocalRequestTimeoutSec: mistralLocalRequestTimeoutSec,
                 instructions: TTSConfiguration.defaultInstructions
             )
         }
@@ -683,6 +819,11 @@ final class AppState: ObservableObject {
             pocketBaseURL: baseURL,
             pocketVoiceURL: effectivePocketVoice(),
             pocketRequestTimeoutSec: pocketRequestTimeoutSec,
+            mistralLocalBaseURL: mistralLocalBaseURL,
+            mistralLocalAPIKey: mistralLocalAPIKey,
+            mistralLocalModelID: mistralLocalModelID,
+            mistralLocalVoice: mistralLocalVoice,
+            mistralLocalRequestTimeoutSec: mistralLocalRequestTimeoutSec,
             instructions: TTSConfiguration.defaultInstructions
         )
 
@@ -699,13 +840,103 @@ final class AppState: ObservableObject {
     }
 
     @MainActor
+    func installMistralRuntime() async {
+        do {
+            try await voxtralRuntimeManager.reinstall(venvPath: mistralManagedVenvPath)
+            mistralManagedLastError = ""
+            errorMessage = nil
+        } catch {
+            mistralManagedLastError = error.localizedDescription
+            errorMessage = error.localizedDescription
+            logger.error("Voxtral runtime install failed: \(error.localizedDescription)", source: "AppState")
+        }
+    }
+
+    @MainActor
+    func startMistralRuntime() async {
+        await ensureMistralRuntimeStarted(logSource: "Settings")
+    }
+
+    @MainActor
+    func stopMistralRuntime() {
+        voxtralRuntimeManager.stopServer()
+    }
+
+    @MainActor
+    func restartMistralRuntime() async {
+        do {
+            try await voxtralRuntimeManager.restartServer(
+                host: mistralManagedHost,
+                port: mistralManagedPort,
+                modelID: resolveMistralLocalModelID(logSource: "Settings"),
+                apiKey: resolveMistralLocalAPIKey(logSource: "Settings"),
+                venvPath: mistralManagedVenvPath,
+                autoRestart: mistralManagedAutoStart
+            )
+            mistralManagedLastError = ""
+            errorMessage = nil
+        } catch {
+            mistralManagedLastError = error.localizedDescription
+            errorMessage = error.localizedDescription
+            logger.error("Voxtral runtime restart failed: \(error.localizedDescription)", source: "Settings")
+        }
+    }
+
+    @MainActor
+    func runMistralRuntimeHealthCheck() async -> VoxtralRuntimeHealth {
+        let baseURL = mistralManagedModeEnabled ? managedMistralBaseURL() : mistralLocalBaseURL
+        return await voxtralRuntimeManager.healthCheck(
+            baseURL: baseURL,
+            apiKey: resolveMistralLocalAPIKey(logSource: "Settings")
+        )
+    }
+
+    @MainActor
+    func runMistralRuntimeHealthCheckWithReadout() async {
+        let health = await runMistralRuntimeHealthCheck()
+        guard health.isHealthy else {
+            errorMessage = health.message ?? "Voxtral health check failed."
+            return
+        }
+
+        let healthCheckConfiguration = TTSConfiguration(
+            provider: .mistralLocal,
+            openAIAPIKey: "",
+            openAIVoice: TTSVoice(rawValue: selectedVoice) ?? .coral,
+            elevenLabsAPIKey: "",
+            elevenLabsVoiceID: "",
+            elevenLabsModelID: elevenLabsModelID,
+            pocketBaseURL: pocketBaseURL,
+            pocketVoiceURL: pocketVoiceURL,
+            pocketRequestTimeoutSec: pocketRequestTimeoutSec,
+            mistralLocalBaseURL: resolveMistralLocalBaseURL(logSource: "Settings"),
+            mistralLocalAPIKey: resolveMistralLocalAPIKey(logSource: "Settings"),
+            mistralLocalModelID: resolveMistralLocalModelID(logSource: "Settings"),
+            mistralLocalVoice: mistralLocalVoice,
+            mistralLocalRequestTimeoutSec: mistralLocalRequestTimeoutSec,
+            instructions: TTSConfiguration.defaultInstructions
+        )
+
+        errorMessage = nil
+        enqueueRequest(
+            source: .settings,
+            text: "Mistral Voxtral health check successful.",
+            shouldSummarize: false,
+            targetLanguage: nil,
+            summarizationPromptOverride: nil,
+            ttsConfigurationOverride: healthCheckConfiguration
+        )
+        processNextRequestIfPossible()
+    }
+
+    @MainActor
     private func ensurePocketRuntimeStarted(logSource: String) async {
         guard pocketManagedEnabled else { return }
 
         do {
             try await pocketRuntimeManager.installIfNeeded(venvPath: pocketManagedVenvPath)
 
-            let portsToTry = candidateManagedPocketPorts(startingAt: pocketManagedPort)
+            let portsToTry = candidateManagedPorts(startingAt: pocketManagedPort)
             var started = false
             var lastStartupError: Error?
 
@@ -764,7 +995,82 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func candidateManagedPocketPorts(startingAt startPort: Int) -> [Int] {
+    @MainActor
+    private func ensureMistralRuntimeStarted(logSource: String) async {
+        guard mistralManagedEnabled else { return }
+        guard VoxtralRuntimeManager.isManagedRuntimeSupportedOnCurrentPlatform else {
+            let message = VoxtralRuntimeError.unsupportedPlatform(VoxtralRuntimeManager.unsupportedPlatformDescription).localizedDescription
+            mistralManagedLastError = message
+            errorMessage = message
+            logger.error("Voxtral managed runtime unsupported on this platform", source: logSource)
+            return
+        }
+
+        do {
+            try await voxtralRuntimeManager.installIfNeeded(venvPath: mistralManagedVenvPath)
+
+            let portsToTry = candidateManagedPorts(startingAt: mistralManagedPort)
+            var started = false
+            var lastStartupError: Error?
+            let apiKey = resolveMistralLocalAPIKey(logSource: logSource)
+            let modelID = resolveMistralLocalModelID(logSource: logSource)
+
+            for port in portsToTry {
+                let baseURL = VoxtralRuntimeManager.baseURL(host: mistralManagedHost, port: port)
+                let health = await voxtralRuntimeManager.healthCheck(baseURL: baseURL, apiKey: apiKey)
+                if health.isHealthy {
+                    if mistralManagedPort != port {
+                        logger.warning("Switching Voxtral managed port to \(port) because configured port is unavailable", source: logSource)
+                        mistralManagedPort = port
+                    }
+                    started = true
+                    break
+                }
+
+                if health.statusCode != nil, !health.isVoxtralAPI {
+                    logger.warning("Port \(port) is occupied by a non-Voxtral service, skipping.", source: logSource)
+                    continue
+                }
+
+                do {
+                    try await voxtralRuntimeManager.startServer(
+                        host: mistralManagedHost,
+                        port: port,
+                        modelID: modelID,
+                        apiKey: apiKey,
+                        venvPath: mistralManagedVenvPath,
+                        autoRestart: mistralManagedAutoStart
+                    )
+                    let postStartHealth = await voxtralRuntimeManager.healthCheck(baseURL: baseURL, apiKey: apiKey)
+                    if postStartHealth.isHealthy {
+                        if mistralManagedPort != port {
+                            logger.warning("Using fallback Voxtral managed port \(port)", source: logSource)
+                            mistralManagedPort = port
+                        }
+                        started = true
+                        break
+                    }
+                } catch {
+                    lastStartupError = error
+                }
+            }
+
+            guard started else {
+                if let lastStartupError {
+                    throw lastStartupError
+                }
+                throw VoxtralRuntimeError.healthCheckFailed
+            }
+
+            mistralManagedLastError = ""
+        } catch {
+            mistralManagedLastError = error.localizedDescription
+            errorMessage = error.localizedDescription
+            logger.error("Voxtral runtime startup failed: \(error.localizedDescription)", source: logSource)
+        }
+    }
+
+    private func candidateManagedPorts(startingAt startPort: Int) -> [Int] {
         let safeStart = max(1025, min(65500, startPort))
         var ports: [Int] = [safeStart]
         for offset in 1...5 {
@@ -1330,6 +1636,24 @@ final class AppState: ObservableObject {
             }
         }
 
+        if provider == .mistralLocal, !mistralManagedModeEnabled {
+            let configuredBaseURL = resolveMistralLocalBaseURL(logSource: logSource)
+            let manualHealth = await voxtralRuntimeManager.healthCheck(
+                baseURL: configuredBaseURL,
+                apiKey: resolveMistralLocalAPIKey(logSource: logSource)
+            )
+            if manualHealth.isHealthy {
+                mistralLocalBaseURL = configuredBaseURL
+            } else if !manualHealth.isVoxtralAPI,
+                      voxtralRuntimeManager.hasInstalledRuntime(venvPath: mistralManagedVenvPath) {
+                logger.warning(
+                    "Configured Voxtral endpoint is not Voxtral API (\(configuredBaseURL)); switching to managed runtime.",
+                    source: logSource
+                )
+                mistralManagedEnabled = true
+            }
+        }
+
         let openAIAPIKey: String?
         if requiresOpenAIForLLM || provider == .openAI {
             guard let resolved = resolveOpenAIAPIKey(logSource: logSource) else {
@@ -1346,6 +1670,14 @@ final class AppState: ObservableObject {
         if provider == .pocketLocal, pocketManagedEnabled {
             await ensurePocketRuntimeStarted(logSource: logSource)
             if !pocketManagedLastError.isEmpty {
+                markRequestFinished()
+                return
+            }
+        }
+
+        if provider == .mistralLocal, mistralManagedModeEnabled {
+            await ensureMistralRuntimeStarted(logSource: logSource)
+            if !mistralManagedLastError.isEmpty {
                 markRequestFinished()
                 return
             }
