@@ -37,12 +37,35 @@ done
 # Use release build for DMG, debug for regular builds
 if [ "$BUILD_DMG" = true ]; then
     echo "Building Hibiki (release)..."
-    swift build -c release --product Hibiki
+    BUILD_CONFIG="release"
+    swift build -c "$BUILD_CONFIG" --product Hibiki
     EXECUTABLE=".build/release/Hibiki"
 else
     echo "Building Hibiki..."
-    swift build --product Hibiki
+    BUILD_CONFIG="debug"
+    swift build -c "$BUILD_CONFIG" --product Hibiki
     EXECUTABLE=".build/debug/Hibiki"
+fi
+
+patch_spm_resource_accessors() {
+    local build_dir="$1"
+    PATCHED_RESOURCE_ACCESSORS=false
+
+    for accessor in "$build_dir"/*.build/DerivedSources/resource_bundle_accessor.swift; do
+        [ -e "$accessor" ] || continue
+
+        if grep -q 'Bundle.main.bundleURL.appendingPathComponent' "$accessor"; then
+            perl -0pi -e 's/let mainPath = Bundle\.main\.bundleURL\.appendingPathComponent\("([^"]+)"\)\.path/let mainPath = (Bundle.main.resourceURL ?? Bundle.main.bundleURL).appendingPathComponent("$1").path/g' "$accessor"
+            PATCHED_RESOURCE_ACCESSORS=true
+        fi
+    done
+}
+
+BUILD_DIR=$(dirname "$EXECUTABLE")
+patch_spm_resource_accessors "$BUILD_DIR"
+if [ "$PATCHED_RESOURCE_ACCESSORS" = true ]; then
+    echo "Patched SwiftPM resource accessors for app-bundle Resources lookup."
+    swift build -c "$BUILD_CONFIG" --product Hibiki
 fi
 
 APP_DIR=".build/Hibiki.app"
@@ -75,7 +98,6 @@ iconutil -c icns "$ICONSET_DIR" -o "$APP_DIR/Contents/Resources/AppIcon.icns"
 rm -rf "$ICONSET_DIR"
 
 # Copy resource bundles (for runtime resources)
-BUILD_DIR=$(dirname "$EXECUTABLE")
 for bundle in "$BUILD_DIR"/*.bundle; do
     [ -e "$bundle" ] || continue
     cp -R "$bundle" "$APP_DIR/Contents/Resources/"
