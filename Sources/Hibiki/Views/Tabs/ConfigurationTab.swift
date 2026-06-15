@@ -9,6 +9,7 @@ struct ConfigurationTab: View {
     @StateObject private var pocketRuntimeManager = PocketTTSRuntimeManager.shared
     @State private var showOpenAIKey = false
     @State private var showElevenLabsKey = false
+    @State private var showMistralLocalKey = false
     @State private var hasAccessibility = false
     @State private var cliInstallStatus: CLIInstallStatus = .unknown
     @State private var isInstallingCLI = false
@@ -224,7 +225,7 @@ struct ConfigurationTab: View {
                                 .frame(maxWidth: .infinity, alignment: .topLeading)
                             }
 
-                            Text("Env vars: OPENAI_API_KEY, ELEVENLABS_API_KEY, POCKET_TTS_BASE_URL")
+                            Text("Env vars: OPENAI_API_KEY, ELEVENLABS_API_KEY, POCKET_TTS_BASE_URL, MISTRAL_TTS_BASE_URL, MISTRAL_TTS_API_KEY, MISTRAL_TTS_MODEL_ID")
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
 
@@ -375,7 +376,7 @@ struct ConfigurationTab: View {
                                 Text("Voice ID is configurable in API Keys.")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-                            } else {
+                            } else if selectedTTSProvider == .pocketLocal {
                                 VStack(alignment: .leading, spacing: 6) {
                                     if !appState.pocketManagedEnabled {
                                         Text("Endpoint URL:")
@@ -410,6 +411,73 @@ struct ConfigurationTab: View {
                                 }
 
                                 Text("Pocket TTS local mode is English-only in this release.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            } else {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    if !appState.mistralManagedEnabled {
+                                        Text("Endpoint URL:")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        TextField("http://127.0.0.1:8091", text: $appState.mistralLocalBaseURL)
+                                            .textFieldStyle(.roundedBorder)
+                                    } else {
+                                        Text("Managed runtime controls host and port below.")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+
+                                    Text("Model ID:")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    TextField(
+                                        appState.mistralManagedEnabled
+                                            ? VoxtralRuntimeManager.defaultManagedModelID
+                                            : TTSConfiguration.defaultMistralLocalModelID,
+                                        text: $appState.mistralLocalModelID
+                                    )
+                                    .textFieldStyle(.roundedBorder)
+
+                                    Text("Voice preset:")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    TextField(
+                                        TTSConfiguration.defaultMistralLocalVoice,
+                                        text: $appState.mistralLocalVoice
+                                    )
+                                    .textFieldStyle(.roundedBorder)
+
+                                    Text("Optional API key:")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    HStack {
+                                        if showMistralLocalKey {
+                                            TextField("token-...", text: $appState.mistralLocalAPIKey)
+                                                .textFieldStyle(.roundedBorder)
+                                        } else {
+                                            SecureField("token-...", text: $appState.mistralLocalAPIKey)
+                                                .textFieldStyle(.roundedBorder)
+                                        }
+                                        Button(showMistralLocalKey ? "Hide" : "Show") {
+                                            showMistralLocalKey.toggle()
+                                        }
+                                    }
+
+                                    HStack(spacing: 8) {
+                                        Text("Timeout (s):")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        TextField(
+                                            "180",
+                                            value: $appState.mistralLocalRequestTimeoutSec,
+                                            format: .number.precision(.fractionLength(0...1))
+                                        )
+                                        .textFieldStyle(.roundedBorder)
+                                        .frame(width: 80)
+                                    }
+                                }
+
+                                Text("Targets an OpenAI-compatible `/v1/audio/speech` endpoint, e.g. `vllm serve mistralai/Voxtral-4B-TTS-2603 --omni` or `mlx_audio.server`.")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             }
@@ -630,6 +698,8 @@ struct ConfigurationTab: View {
                     }
                     .padding(.vertical, 4)
                 }
+
+                VoxtralManagedRuntimeSection()
 
                 GroupBox("History Retention") {
                     VStack(alignment: .leading, spacing: 10) {

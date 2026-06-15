@@ -1,4 +1,5 @@
 import Foundation
+import HibikiShared
 
 enum TTSVoice: String, CaseIterable, Identifiable {
     case alloy, ash, ballad, coral, echo, fable, onyx, nova, sage, shimmer, verse
@@ -9,6 +10,7 @@ enum TTSProvider: String, CaseIterable, Identifiable {
     case openAI = "openai"
     case elevenLabs = "elevenlabs"
     case pocketLocal = "pocket-local"
+    case mistralLocal = "mistral-local"
     var id: String { rawValue }
 
     var displayName: String {
@@ -16,6 +18,7 @@ enum TTSProvider: String, CaseIterable, Identifiable {
         case .openAI: return "OpenAI"
         case .elevenLabs: return "ElevenLabs"
         case .pocketLocal: return "Pocket TTS (Local)"
+        case .mistralLocal: return "Mistral Voxtral (Local)"
         }
     }
 }
@@ -44,6 +47,10 @@ struct TTSConfiguration {
     static let defaultPocketBaseURL = "http://127.0.0.1:8000"
     static let defaultPocketVoiceURL = "alba"
     static let defaultPocketRequestTimeoutSec: Double = 60
+    static let defaultMistralLocalBaseURL = MistralLocalTTSDefaults.baseURL
+    static let defaultMistralLocalModelID = MistralLocalTTSDefaults.modelID
+    static let defaultMistralLocalVoice = MistralLocalTTSDefaults.voice
+    static let defaultMistralLocalRequestTimeoutSec = MistralLocalTTSDefaults.requestTimeoutSec
 
     let provider: TTSProvider
     let openAIAPIKey: String
@@ -54,6 +61,11 @@ struct TTSConfiguration {
     let pocketBaseURL: String
     let pocketVoiceURL: String
     let pocketRequestTimeoutSec: Double
+    let mistralLocalBaseURL: String
+    let mistralLocalAPIKey: String
+    let mistralLocalModelID: String
+    let mistralLocalVoice: String
+    let mistralLocalRequestTimeoutSec: Double
     let instructions: String
 
     var historyVoiceLabel: String {
@@ -65,6 +77,8 @@ struct TTSConfiguration {
         case .pocketLocal:
             let voice = normalizedPocketVoiceURL ?? Self.defaultPocketVoiceURL
             return "pocket:\(voice)"
+        case .mistralLocal:
+            return mistralLocalConfiguration.historyVoiceLabel
         }
     }
 
@@ -90,6 +104,34 @@ struct TTSConfiguration {
 
     var normalizedPocketRequestTimeoutSec: Double {
         max(5.0, pocketRequestTimeoutSec)
+    }
+
+    var mistralLocalConfiguration: MistralLocalTTSConfiguration {
+        MistralLocalTTSConfiguration(
+            mistralLocalBaseURL: mistralLocalBaseURL,
+            mistralLocalModelID: mistralLocalModelID,
+            mistralLocalVoice: mistralLocalVoice
+        )
+    }
+
+    var normalizedMistralLocalBaseURL: String {
+        mistralLocalConfiguration.normalizedBaseURL
+    }
+
+    var normalizedMistralLocalSpeechURL: URL? {
+        mistralLocalConfiguration.speechURL
+    }
+
+    var normalizedMistralLocalModelID: String {
+        mistralLocalConfiguration.normalizedModelID
+    }
+
+    var normalizedMistralLocalVoice: String {
+        mistralLocalConfiguration.normalizedVoice
+    }
+
+    var normalizedMistralLocalRequestTimeoutSec: Double {
+        max(5.0, mistralLocalRequestTimeoutSec)
     }
 }
 
@@ -188,6 +230,12 @@ final class TTSService: NSObject {
                 onError(TTSError.invalidURL)
                 return
             }
+        case .mistralLocal:
+            guard configuration.normalizedMistralLocalSpeechURL != nil else {
+                print("[Hibiki] ❌ Invalid Mistral Voxtral URL")
+                onError(TTSError.invalidURL)
+                return
+            }
         }
 
         // Split text into chunks for processing
@@ -256,6 +304,8 @@ final class TTSService: NSObject {
             streamSingleChunkWithElevenLabs(text: text, configuration: configuration)
         case .pocketLocal:
             streamSingleChunkWithPocketLocal(text: text, configuration: configuration)
+        case .mistralLocal:
+            streamSingleChunkWithMistralLocal(text: text, configuration: configuration)
         }
     }
 
@@ -439,6 +489,65 @@ final class TTSService: NSObject {
         currentTask?.resume()
     }
 
+    private func streamSingleChunkWithMistralLocal(text: String, configuration: TTSConfiguration) {
+        guard let url = configuration.normalizedMistralLocalSpeechURL else {
+            print("[Hibiki] ❌ Invalid Mistral Voxtral URL")
+            onError?(TTSError.invalidURL)
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("audio/wav", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = configuration.normalizedMistralLocalRequestTimeoutSec
+
+        let apiKey = configuration.mistralLocalAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        let body: [String: Any] = [
+            "input": text,
+            "model": configuration.normalizedMistralLocalModelID,
+            "voice": configuration.normalizedMistralLocalVoice,
+            "response_format": "wav"
+        ]
+
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        } catch {
+            print("[Hibiki] ❌ JSON encoding error: \(error)")
+            onError?(error)
+            return
+        }
+
+        print("[Hibiki] 🌐 Making API request to Mistral Voxtral for chunk \(currentChunkIndex + 1)...")
+        performMistralLocalRequest(
+            request: request,
+            text: text,
+            onAudioData: { [weak self] audioData in
+                guard let self else { return }
+                self.receivedChunkCount += 1
+                self.receivedChunkBytes += audioData.count
+                self.accumulatedAudioData.append(audioData)
+                self.onAudioChunk?(audioData)
+
+                let estimatedTokens = max(1, text.count / 4)
+                self.isTokenEstimated = true
+                self.totalInputTokens += estimatedTokens
+
+                print("[Hibiki] ✅ Chunk \(self.currentChunkIndex + 1) complete, estimated tokens: \(estimatedTokens), running total: \(self.totalInputTokens)")
+
+                self.currentChunkIndex += 1
+                self.processNextChunk()
+            },
+            onError: { [weak self] error in
+                self?.onError?(error)
+            }
+        )
+    }
+
     func cancel() {
         isCancelled = true
         currentTask?.cancel()
@@ -521,6 +630,12 @@ final class TTSService: NSObject {
                 onError(TTSError.invalidURL)
                 return
             }
+        case .mistralLocal:
+            guard configuration.normalizedMistralLocalSpeechURL != nil else {
+                print("[Hibiki] ❌ Invalid Mistral Voxtral URL in pipeline")
+                onError(TTSError.invalidURL)
+                return
+            }
         }
     }
 
@@ -599,6 +714,8 @@ final class TTSService: NSObject {
             streamPipelineSentenceWithElevenLabs(text: text, configuration: configuration)
         case .pocketLocal:
             streamPipelineSentenceWithPocketLocal(text: text, configuration: configuration)
+        case .mistralLocal:
+            streamPipelineSentenceWithMistralLocal(text: text, configuration: configuration)
         }
     }
 
@@ -858,6 +975,55 @@ final class TTSService: NSObject {
         task.resume()
     }
 
+    private func streamPipelineSentenceWithMistralLocal(text: String, configuration: TTSConfiguration) {
+        guard let url = configuration.normalizedMistralLocalSpeechURL else {
+            print("[Hibiki] ❌ Invalid Mistral Voxtral URL")
+            pipelineOnError?(TTSError.invalidURL)
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("audio/wav", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = configuration.normalizedMistralLocalRequestTimeoutSec
+
+        let apiKey = configuration.mistralLocalAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        let body: [String: Any] = [
+            "input": text,
+            "model": configuration.normalizedMistralLocalModelID,
+            "voice": configuration.normalizedMistralLocalVoice,
+            "response_format": "wav"
+        ]
+
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        } catch {
+            print("[Hibiki] ❌ JSON encoding error: \(error)")
+            pipelineOnError?(error)
+            return
+        }
+
+        performMistralLocalRequest(
+            request: request,
+            text: text,
+            onAudioData: { [weak self] audioData in
+                guard let self else { return }
+                let estimatedTokens = max(1, text.count / 4)
+                print("[Hibiki] ✅ Pipeline Mistral sentence complete: \(audioData.count) bytes, ~\(estimatedTokens) tokens")
+                self.pipelineOnAudioChunk?(audioData)
+                self.finishCurrentSentence(tokens: estimatedTokens)
+            },
+            onError: { [weak self] error in
+                self?.pipelineOnError?(error)
+            }
+        )
+    }
+
     private func configurationByUpdatingElevenLabsModel(
         _ configuration: TTSConfiguration,
         modelID: String
@@ -872,6 +1038,11 @@ final class TTSService: NSObject {
             pocketBaseURL: configuration.pocketBaseURL,
             pocketVoiceURL: configuration.pocketVoiceURL,
             pocketRequestTimeoutSec: configuration.pocketRequestTimeoutSec,
+            mistralLocalBaseURL: configuration.mistralLocalBaseURL,
+            mistralLocalAPIKey: configuration.mistralLocalAPIKey,
+            mistralLocalModelID: configuration.mistralLocalModelID,
+            mistralLocalVoice: configuration.mistralLocalVoice,
+            mistralLocalRequestTimeoutSec: configuration.mistralLocalRequestTimeoutSec,
             instructions: configuration.instructions
         )
     }
@@ -962,6 +1133,66 @@ final class TTSService: NSObject {
 
         try decoder.finalize()
         return output
+    }
+
+    private func performMistralLocalRequest(
+        request: URLRequest,
+        text: String,
+        onAudioData: @escaping (Data) -> Void,
+        onError: @escaping (Error) -> Void
+    ) {
+        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self else { return }
+
+            if self.isCancelled {
+                return
+            }
+
+            if let error {
+                if (error as NSError).code != NSURLErrorCancelled {
+                    print("[Hibiki] ❌ Mistral Voxtral error: \(error.localizedDescription)")
+                    onError(error)
+                }
+                return
+            }
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                onError(TTSError.apiError(statusCode: 0, message: nil))
+                return
+            }
+
+            guard httpResponse.statusCode == 200 else {
+                print("[Hibiki] ❌ Mistral Voxtral API error: HTTP \(httpResponse.statusCode)")
+                var parsedErrorMessage: String?
+                if let errorBody = data,
+                   let parsed = self.parseErrorMessage(from: errorBody) {
+                    parsedErrorMessage = parsed
+                }
+                onError(TTSError.apiError(statusCode: httpResponse.statusCode, message: parsedErrorMessage))
+                return
+            }
+
+            guard let wavData = data, !wavData.isEmpty else {
+                print("[Hibiki] ⚠️ Mistral Voxtral returned empty data")
+                onError(TTSError.emptyAudioData)
+                return
+            }
+
+            do {
+                let pcmData = try self.decodePocketWAVResponseData(wavData)
+                guard !pcmData.isEmpty else {
+                    onError(TTSError.emptyAudioData)
+                    return
+                }
+                onAudioData(pcmData)
+            } catch {
+                print("[Hibiki] ❌ Mistral Voxtral decode failed for \(text.count) chars: \(error.localizedDescription)")
+                onError(error)
+            }
+        }
+
+        currentTask = task
+        task.resume()
     }
 
     /// Mark current sentence as complete and process next
@@ -1199,6 +1430,8 @@ enum TTSError: Error, LocalizedError {
                 return "ElevenLabs API key is not configured"
             case .pocketLocal:
                 return "Pocket TTS local runtime is not configured"
+            case .mistralLocal:
+                return "Mistral Voxtral local endpoint is not configured"
             }
         case .missingVoiceID(let provider):
             switch provider {
@@ -1208,6 +1441,8 @@ enum TTSError: Error, LocalizedError {
                 return "ElevenLabs voice ID is not configured"
             case .pocketLocal:
                 return "Pocket TTS voice is not configured"
+            case .mistralLocal:
+                return "Mistral Voxtral voice is not configured"
             }
         case .invalidConfiguration:
             return "Invalid TTS configuration"

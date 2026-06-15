@@ -22,7 +22,7 @@ let package = Package(
         ),
         .target(
             name: "HibikiPocketRuntime",
-            dependencies: [],
+            dependencies: ["HibikiShared"],
             path: "Sources/HibikiPocketRuntime"
         ),
         .executableTarget(

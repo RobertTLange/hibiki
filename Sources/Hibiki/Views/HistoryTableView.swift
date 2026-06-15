@@ -252,6 +252,8 @@ struct HistoryTableView: View {
             return Color(red: 0.3, green: 0.55, blue: 0.85)
         case .pocketLocal:
             return .orange
+        case .mistralLocal:
+            return Color(red: 0.55, green: 0.35, blue: 0.15)
         }
     }
 }
