@@ -352,6 +352,7 @@ final class AppState: ObservableObject {
         DoNotDisturbPolicy.setEnabled(false)
 
         migrateSummarizationPromptIfNeeded()
+        migrateLLMModelDefaultsIfNeeded()
         if elevenLabsVoiceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             elevenLabsVoiceID = "JBFqnCBsd6RMkjVDRZzb"
         }
@@ -408,6 +409,15 @@ final class AppState: ObservableObject {
             summarizationPrompt = Self.defaultSummarizationPrompt
             logger.info("Updated legacy summarization prompt to latest default", source: "AppState")
         }
+    }
+
+    private func migrateLLMModelDefaultsIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: LLMModelMigration.completedDefaultsKey) else { return }
+        summarizationModel = LLMModelMigration.migratedValue(for: summarizationModel)
+        translationModelSetting = LLMModelMigration.migratedValue(for: translationModelSetting)
+        defaults.set(true, forKey: LLMModelMigration.completedDefaultsKey)
+        logger.info("Migrated legacy LLM model defaults to \(LLMModel.defaultModel.rawValue)", source: "AppState")
     }
 
     private func activeTTSProvider() -> TTSProvider {

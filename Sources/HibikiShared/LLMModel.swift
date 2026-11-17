@@ -6,7 +6,7 @@ public enum LLMModel: String, CaseIterable, Identifiable, Sendable {
     case gpt5Mini = "gpt-5-mini"
     case gpt52 = "gpt-5.2"
 
-    public static let defaultModel: LLMModel = .gpt5Nano
+    public static let defaultModel: LLMModel = .gpt6Luna
 
     public var id: String { rawValue }
 
@@ -36,5 +36,15 @@ public enum LLMPricing {
         let pricing = (LLMModel(rawValue: model) ?? .defaultModel).pricing
         return Double(inputTokens) / 1_000_000.0 * pricing.input +
                Double(outputTokens) / 1_000_000.0 * pricing.output
+    }
+}
+
+/// One-time upgrade of settings still on the previous default model.
+public enum LLMModelMigration {
+    public static let completedDefaultsKey = "didMigrateLLMDefaultToGPT6Luna"
+    private static let legacyDefault: LLMModel = .gpt5Nano
+
+    public static func migratedValue(for stored: String) -> String {
+        stored == legacyDefault.rawValue ? LLMModel.defaultModel.rawValue : stored
     }
 }
