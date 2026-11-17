@@ -4,6 +4,16 @@ import HibikiShared
 final class LLMPricingTests: XCTestCase {
     private let oneMillion = 1_000_000
 
+    func testGPT6LunaPricing() {
+        let cost = LLMPricing.calculateCost(inputTokens: oneMillion, outputTokens: oneMillion, model: "gpt-6-luna")
+        XCTAssertEqual(cost, 0.60, accuracy: 1e-9)
+    }
+
+    func testGPT6LunaIsListedFirst() {
+        XCTAssertEqual(LLMModel.allCases.first, .gpt6Luna)
+        XCTAssertEqual(LLMModel.gpt6Luna.displayName, "GPT-6 Luna")
+    }
+
     func testNanoPricing() {
         let cost = LLMPricing.calculateCost(inputTokens: oneMillion, outputTokens: oneMillion, model: "gpt-5-nano")
         XCTAssertEqual(cost, 0.45, accuracy: 1e-9)
