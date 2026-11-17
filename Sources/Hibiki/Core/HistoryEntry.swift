@@ -1,4 +1,5 @@
 import Foundation
+import HibikiShared
 
 struct HistoryEntry: Identifiable, Codable, Sendable {
     let id: UUID
@@ -197,36 +198,5 @@ enum TTSPricing {
 
     static func calculateCost(inputTokens: Int) -> Double {
         return Double(inputTokens) / 1_000_000.0 * costPerMillionTokens
-    }
-}
-
-enum LLMPricing {
-    // Pricing per 1M tokens
-    // gpt-5-nano: $0.05 input, $0.40 output
-    // gpt-5-mini: $0.25 input, $2.00 output
-    // gpt-5.2: $1.75 input, $14.00 output
-
-    static func calculateCost(inputTokens: Int, outputTokens: Int, model: String) -> Double {
-        let inputCostPerMillion: Double
-        let outputCostPerMillion: Double
-
-        switch model {
-        case "gpt-5-nano":
-            inputCostPerMillion = 0.05
-            outputCostPerMillion = 0.40
-        case "gpt-5-mini":
-            inputCostPerMillion = 0.25
-            outputCostPerMillion = 2.00
-        case "gpt-5.2":
-            inputCostPerMillion = 1.75
-            outputCostPerMillion = 14.00
-        default:
-            // Default to gpt-5-nano pricing
-            inputCostPerMillion = 0.05
-            outputCostPerMillion = 0.40
-        }
-
-        return Double(inputTokens) / 1_000_000.0 * inputCostPerMillion +
-               Double(outputTokens) / 1_000_000.0 * outputCostPerMillion
     }
 }

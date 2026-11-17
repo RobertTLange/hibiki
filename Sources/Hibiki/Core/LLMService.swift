@@ -1,4 +1,5 @@
 import Foundation
+import HibikiShared
 
 struct LLMResult {
     let summarizedText: String
@@ -77,22 +78,6 @@ enum TargetLanguage: String, CaseIterable, Identifiable {
                 Traduce el siguiente texto al español. Conserva el significado, el tono y el estilo. \
                 Produce únicamente la traducción, sin explicaciones ni notas.
                 """
-        }
-    }
-}
-
-enum LLMModel: String, CaseIterable, Identifiable {
-    case gpt5Nano = "gpt-5-nano"
-    case gpt5Mini = "gpt-5-mini"
-    case gpt52 = "gpt-5.2"
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .gpt5Nano: return "GPT-5 Nano"
-        case .gpt5Mini: return "GPT-5 Mini"
-        case .gpt52: return "GPT-5.2"
         }
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import HibikiShared
 
 /// Result from the interleaved pipeline
 struct InterleavedPipelineResult {

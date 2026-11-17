@@ -109,12 +109,12 @@ final class AppState: ObservableObject {
     @Published var isPanelCollapsed: Bool = false
 
     // Summarization settings
-    @AppStorage("summarizationModel") var summarizationModel: String = LLMModel.gpt5Nano.rawValue
+    @AppStorage("summarizationModel") var summarizationModel: String = LLMModel.defaultModel.rawValue
     @AppStorage("summarizationPrompt") var summarizationPrompt: String = AppState.defaultSummarizationPrompt
 
     // Translation settings
     @AppStorage("targetLanguage") var targetLanguage: String = TargetLanguage.none.rawValue
-    @AppStorage("translationModel") var translationModelSetting: String = LLMModel.gpt5Nano.rawValue
+    @AppStorage("translationModel") var translationModelSetting: String = LLMModel.defaultModel.rawValue
     
     // Per-language translation prompts (stored separately for each language)
     @AppStorage("translationPrompt_en") var translationPromptEnglish: String = TargetLanguage.english.defaultPrompt
@@ -1549,7 +1549,7 @@ final class AppState: ObservableObject {
         audioPlayer.playbackSpeed = Float(playbackSpeed)
         audioPlayer.setEstimatedDuration(forTextLength: text.count / 3)
 
-        let model = LLMModel(rawValue: summarizationModel) ?? .gpt5Nano
+        let model = LLMModel(rawValue: summarizationModel) ?? .defaultModel
 
         // Configure interleaved pipeline for summarize-only
         interleavedPipeline.onSummarySentence = { [weak self] sentence in
@@ -1661,7 +1661,7 @@ final class AppState: ObservableObject {
         audioPlayer.playbackSpeed = Float(playbackSpeed)
         audioPlayer.setEstimatedDuration(forTextLength: text.count)
 
-        let translationModel = LLMModel(rawValue: translationModelSetting) ?? .gpt5Nano
+        let translationModel = LLMModel(rawValue: translationModelSetting) ?? .defaultModel
 
         // For translate-only, we use LLMService directly
         do {
@@ -1774,8 +1774,8 @@ final class AppState: ObservableObject {
         audioPlayer.playbackSpeed = Float(playbackSpeed)
         audioPlayer.setEstimatedDuration(forTextLength: text.count / 3)
 
-        let model = LLMModel(rawValue: summarizationModel) ?? .gpt5Nano
-        let translationModel = LLMModel(rawValue: translationModelSetting) ?? .gpt5Nano
+        let model = LLMModel(rawValue: summarizationModel) ?? .defaultModel
+        let translationModel = LLMModel(rawValue: translationModelSetting) ?? .defaultModel
 
         // Configure interleaved pipeline callbacks
         interleavedPipeline.onSummarySentence = { _ in }  // Don't show summary when translating
