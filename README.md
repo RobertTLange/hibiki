@@ -23,7 +23,7 @@ A macOS menu bar app that reads selected text aloud using OpenAI or ElevenLabs t
 | **Global Hotkeys** | Option+F for TTS, Shift+Option+F for Summarize+TTS |
 | **Streaming Audio** | Audio plays as it's generated for fast response |
 | **TTS Providers** | OpenAI, ElevenLabs, or local Pocket TTS |
-| **AI Summarization** | Condense long texts before reading (GPT-5 Nano/Mini/5.2) |
+| **AI Summarization** | Condense long texts before reading (GPT-6 Luna default; GPT-5 Nano/Mini/5.2) |
 | **Translation** | Translate to English, Japanese, German, French, Spanish |
 | **CLI Tool** | `hibiki --text "Hello"` or `hibiki --file-name README.md` with `--summarize` and `--translate` flags |
 | **History & Stats** | Track past requests and API usage costs |
