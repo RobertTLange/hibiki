@@ -106,6 +106,33 @@ HTTPServer((host, port), Handler).serve_forever()
         XCTAssertNil(manager.lastError)
     }
 
+    /// A server that dies at startup (port taken, bad install) must fail at once and be
+    /// reported as such: callers try another port for this, but not for a slow start.
+    @MainActor
+    func testServerExitingDuringStartupFailsFastAndIsNotATimeout() async throws {
+        let binary = venv.appendingPathComponent("bin/pocket-tts")
+        try Data("#!/bin/sh\nexit 3\n".utf8).write(to: binary)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
+
+        let manager = PocketTTSRuntimeManager.shared
+        let started = Date()
+        do {
+            try await manager.startServer(host: "127.0.0.1", port: try freeTCPPort(), venvPath: venv.path, autoRestart: true)
+            XCTFail("startServer should fail when the server exits")
+        } catch PocketRuntimeError.startupFailed(let message) {
+            XCTAssertTrue(message.contains("exited during startup"), message)
+        }
+
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10)
+        XCTAssertFalse(manager.isRunning)
+        XCTAssertEqual(manager.status, .failed)
+
+        // No auto-restart loop for a server that never came up.
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        XCTAssertEqual(manager.status, .failed)
+        XCTAssertFalse(manager.isRunning)
+    }
+
     private func freeTCPPort() throws -> Int {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")

@@ -191,6 +191,10 @@ public final class PocketTTSRuntimeManager: ObservableObject {
         // Let the previous server release its port before the replacement binds it.
         if let previous = detachServerProcess() {
             await waitForExit(of: previous)
+            // Another start ran while this one was waiting; it owns the server now.
+            guard serverProcess == nil else {
+                throw PocketRuntimeError.superseded
+            }
         }
 
         try ensureDirectories(paths: paths)
@@ -259,12 +263,26 @@ public final class PocketTTSRuntimeManager: ObservableObject {
         // The wait ends early if the process exits.
         let healthy = await waitForHealthy(of: process, baseURL: baseURL, timeoutSeconds: Self.startupTimeoutSeconds)
 
-        // A newer start/stop call took over while this one was waiting; leave its state alone.
-        guard serverProcess === process else {
-            throw PocketRuntimeError.startupFailed(message: "Superseded by a newer start or stop request.")
+        // The server died while starting (typically: the port is taken). Callers may try
+        // another port, so this must stay distinct from a timeout.
+        guard process.isRunning else {
+            if serverProcess === process {
+                detachServerProcess()
+            }
+            let error = PocketRuntimeError.startupFailed(
+                message: "The server exited during startup (code \(process.terminationStatus))."
+            )
+            status = .failed
+            lastError = error.localizedDescription
+            throw error
         }
 
-        if healthy, process.isRunning {
+        // A newer start/stop call took over while this one was waiting; leave its state alone.
+        guard serverProcess === process else {
+            throw PocketRuntimeError.superseded
+        }
+
+        if healthy {
             status = .running
             restartAttempt = 0
             appendLogLine("Pocket TTS server is healthy.")
@@ -317,7 +335,7 @@ public final class PocketTTSRuntimeManager: ObservableObject {
         venvPath: String? = nil,
         autoRestart: Bool = false
     ) async throws {
-        stopServer()
+        // startServer stops the current server itself and waits for it to release the port.
         try await startServer(
             host: host,
             port: port,
@@ -448,6 +466,10 @@ public final class PocketTTSRuntimeManager: ObservableObject {
         cleanupPipesAndHandles()
 
         appendLogLine("Pocket TTS server exited unexpectedly (\(exitCode)).")
+
+        // Still starting: startServer is waiting on this process and reports the failure.
+        // Auto-restart is for a server that was up and then crashed.
+        guard status != .starting else { return }
 
         guard let config = launchConfig, config.autoRestart, restartAttempt < 5 else {
             status = .failed

@@ -46,6 +46,8 @@ public enum PocketRuntimeError: LocalizedError {
     case runtimeNotInstalled
     case startupFailed(message: String)
     case startTimedOut
+    /// A newer start or stop request took over while this start was in progress.
+    case superseded
     case healthCheckFailed
 
     public var errorDescription: String? {
@@ -69,6 +71,8 @@ public enum PocketRuntimeError: LocalizedError {
             return "Pocket TTS failed to start. \(message)"
         case .startTimedOut:
             return "Pocket TTS server did not become healthy in time."
+        case .superseded:
+            return "Pocket TTS start was superseded by a newer start or stop request."
         case .healthCheckFailed:
             return "Pocket TTS health check failed."
         }

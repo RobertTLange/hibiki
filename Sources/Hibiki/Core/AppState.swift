@@ -746,6 +746,8 @@ final class AppState: ObservableObject {
         do {
             // Checked before the health probe below: selected text must not be sent to a
             // "managed" endpoint on another machine just because it answers like Pocket.
+            // (A local process that answers like Pocket on this port is still adopted, e.g.
+            // a server left over from a previous run.)
             guard PocketTTSRuntimeManager.isLoopbackHost(pocketManagedHost) else {
                 throw PocketRuntimeError.invalidHost(pocketManagedHost)
             }
@@ -790,7 +792,15 @@ final class AppState: ObservableObject {
                         started = true
                         break
                     }
+                } catch PocketRuntimeError.startTimedOut {
+                    // The server is running but slow (first start downloads the model).
+                    // Another port would only repeat the wait.
+                    throw PocketRuntimeError.startTimedOut
+                } catch PocketRuntimeError.superseded {
+                    // The user stopped or restarted the runtime; do not start another one.
+                    throw PocketRuntimeError.superseded
                 } catch {
+                    // The server could not come up on this port; try the next one.
                     lastStartupError = error
                 }
             }
