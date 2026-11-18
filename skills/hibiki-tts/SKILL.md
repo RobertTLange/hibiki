@@ -19,7 +19,7 @@ Invoke this skill when the user:
 
 ## Requirements
 
-- The Hibiki macOS app must be running (check menu bar for speaker icon)
+- The Hibiki macOS app must be installed; the CLI launches it if it is not running (speaker icon in the menu bar)
 - The CLI communicates with the app via URL scheme
 
 ## Commands
@@ -117,7 +117,8 @@ hibiki --file-name docs/notes.txt
 
 ## Notes
 
-- Maximum text length is ~32KB (after URL encoding)
+- Maximum text length is ~32KB (after URL encoding); `--summarize` does not lift it, so shorten or split longer text first
+- Text that starts with a dash is fine: `hibiki --text "- first bullet"`
 - Input source: use exactly one of `--text` or `--file-name`
 - `--file-name` expects UTF-8 text files
 - Audio plays through the Hibiki AudioPlayerPanel UI

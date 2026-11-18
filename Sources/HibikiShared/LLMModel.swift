@@ -38,13 +38,3 @@ public enum LLMPricing {
                Double(outputTokens) / 1_000_000.0 * pricing.output
     }
 }
-
-/// One-time upgrade of settings still on the previous default model.
-public enum LLMModelMigration {
-    public static let completedDefaultsKey = "didMigrateLLMDefaultToGPT6Luna"
-    private static let legacyDefault: LLMModel = .gpt5Nano
-
-    public static func migratedValue(for stored: String) -> String {
-        stored == legacyDefault.rawValue ? LLMModel.defaultModel.rawValue : stored
-    }
-}

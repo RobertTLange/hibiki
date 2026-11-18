@@ -1,131 +1,52 @@
 import SwiftUI
+import Combine
 import AppKit
 
-/// Manages playback state for history replay with proper lifecycle handling
+/// History tab's view of replay state. Playback itself is owned by `AppState`, the single
+/// owner of the shared audio player, so a replay and live speech cannot fight over it.
+@MainActor
 final class HistoryPlaybackManager: ObservableObject {
     static let shared = HistoryPlaybackManager()
 
     @Published var playingEntryId: UUID?
     @Published var playbackProgress: Double = 0.0
 
-    private var progressTimer: Timer?
-    private var playbackStartTime: Date?
-    private var seekOffset: TimeInterval = 0
-    private var currentAudioData: Data?
-    private var currentDuration: TimeInterval = 0
-    private let audioPlayer = StreamingAudioPlayer.shared
+    private let appState = AppState.shared
+    private var cancellables = Set<AnyCancellable>()
 
-    private init() {}
-
-    func replay(entry: HistoryEntry, audioData: Data) {
-        // If already playing this entry, stop it
-        if playingEntryId == entry.id {
-            stop()
-            return
-        }
-
-        // Stop any current playback
-        stop()
-
-        // Set up state
-        playingEntryId = entry.id
-        currentAudioData = audioData
-        currentDuration = Double(audioData.count) / 48000.0
-        playbackProgress = 0.0
-        seekOffset = 0
-        audioPlayer.reset()
-
-        // Start playback from the beginning
-        playFromOffset(0)
-
-        // Start progress tracking
-        startProgressTracking(entryId: entry.id)
-    }
-
-    func seek(to progress: Double) {
-        guard currentAudioData != nil else { return }
-
-        let seekTime = currentDuration * progress
-
-        // Calculate byte offset (2 bytes per sample at 24kHz)
-        let byteOffset = Int(seekTime * 48000.0)
-        // Align to frame boundary (2 bytes per frame for 16-bit mono)
-        let alignedOffset = (byteOffset / 2) * 2
-
-        // Stop current playback
-        audioPlayer.stop()
-        audioPlayer.reset()
-
-        // Update seek offset and restart progress tracking
-        seekOffset = seekTime
-        playbackStartTime = Date()
-        playbackProgress = progress
-
-        // Play from new offset
-        playFromOffset(alignedOffset)
-    }
-
-    func stop() {
-        progressTimer?.invalidate()
-        progressTimer = nil
-        audioPlayer.stop()
-        audioPlayer.onPlaybackComplete = nil
-        playingEntryId = nil
-        playbackProgress = 0.0
-        playbackStartTime = nil
-        seekOffset = 0
-        currentAudioData = nil
-        currentDuration = 0
-    }
-
-    private func playFromOffset(_ offset: Int) {
-        guard let audioData = currentAudioData else { return }
-
-        // Enqueue the audio data from the specified byte offset in chunks
-        let chunkSize = 8192
-        var currentOffset = offset
-        while currentOffset < audioData.count {
-            let end = min(currentOffset + chunkSize, audioData.count)
-            let chunk = audioData[currentOffset..<end]
-            audioPlayer.enqueue(pcmData: Data(chunk))
-            currentOffset = end
-        }
-
-        // Mark stream complete to trigger natural playback completion
-        audioPlayer.markStreamComplete()
-    }
-
-    private func startProgressTracking(entryId: UUID) {
-        playbackStartTime = Date()
-
-        // Set up completion callback
-        audioPlayer.onPlaybackComplete = { [weak self] in
-            DispatchQueue.main.async {
-                guard let self = self, self.playingEntryId == entryId else { return }
-                self.stop()
-            }
-        }
-
-        // Start timer for progress updates
-        progressTimer?.invalidate()
-        progressTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-            guard let self = self,
-                  let startTime = self.playbackStartTime,
-                  self.playingEntryId == entryId,
-                  self.currentDuration > 0 else { return }
-
-            let elapsed = Date().timeIntervalSince(startTime) + self.seekOffset
-            let progress = min(1.0, max(0.0, elapsed / self.currentDuration))
-
-            DispatchQueue.main.async {
-                self.playbackProgress = progress
-
-                // Check if playback has finished
-                if progress >= 1.0 {
-                    self.stop()
+    private init() {
+        appState.$activeHistoryReplayEntryId
+            .removeDuplicates()
+            .sink { [weak self] entryID in
+                self?.playingEntryId = entryID
+                if entryID == nil {
+                    self?.playbackProgress = 0.0
                 }
             }
-        }
+            .store(in: &cancellables)
+
+        // AppState publishes progress at display rate for every playback; the table only
+        // needs it for replays, and not that often.
+        appState.$playbackProgress
+            .throttle(for: .milliseconds(50), scheduler: RunLoop.main, latest: true)
+            .sink { [weak self] progress in
+                guard let self, self.playingEntryId != nil else { return }
+                self.playbackProgress = progress
+            }
+            .store(in: &cancellables)
+    }
+
+    func replay(entry: HistoryEntry) {
+        appState.toggleHistoryReplay(for: entry)
+    }
+
+    func seek(entry: HistoryEntry, to progress: Double) {
+        appState.seekHistoryReplay(for: entry, to: progress)
+    }
+
+    /// Stops the replay; live speech and queued requests are left alone.
+    func stop() {
+        appState.stopHistoryReplay()
     }
 }
 
@@ -246,18 +167,11 @@ struct HistoryTab: View {
     }
 
     private func replayEntry(_ entry: HistoryEntry) {
-        // Get audio data and play
-        guard let audioData = historyManager.getAudioData(for: entry) else {
-            print("[Hibiki] Failed to load audio for history entry")
-            return
-        }
-
-        playbackManager.replay(entry: entry, audioData: audioData)
+        playbackManager.replay(entry: entry)
     }
 
     private func seekToPosition(_ entry: HistoryEntry, _ progress: Double) {
-        guard playbackManager.playingEntryId == entry.id else { return }
-        playbackManager.seek(to: progress)
+        playbackManager.seek(entry: entry, to: progress)
     }
 
     private func deleteEntry(_ entry: HistoryEntry) {

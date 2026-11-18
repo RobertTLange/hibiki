@@ -48,21 +48,13 @@ final class SentenceAccumulator {
     private func extractCompleteSentences() -> [String] {
         var sentences: [String] = []
 
+        // findSentenceEnd only reports boundaries that leave a long-enough sentence, so a
+        // short fragment is carried forward and emitted together with what follows it.
         while let sentenceEnd = findSentenceEnd() {
             let sentenceEndIndex = buffer.index(buffer.startIndex, offsetBy: sentenceEnd)
-            let sentence = String(buffer[..<sentenceEndIndex])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-
-            if sentence.count >= minimumSentenceLength {
-                sentences.append(sentence)
-            } else if !sentences.isEmpty {
-                // Attach short fragment to previous sentence
-                let lastIndex = sentences.count - 1
-                sentences[lastIndex] += " " + sentence
-            } else {
-                // Short fragment at start - keep in buffer
-                break
-            }
+            sentences.append(
+                String(buffer[..<sentenceEndIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+            )
 
             // Remove extracted sentence from buffer
             buffer = String(buffer[sentenceEndIndex...])
@@ -100,8 +92,7 @@ final class SentenceAccumulator {
                         // Found a valid sentence end
                         let position = buffer.distance(from: buffer.startIndex, to: nextIndex)
 
-                        // Check minimum length
-                        if position >= minimumSentenceLength {
+                        if isLongEnoughSentence(endingAt: nextIndex) {
                             return position
                         }
                     }
@@ -112,9 +103,9 @@ final class SentenceAccumulator {
             if char == "\n" {
                 let nextIndex = buffer.index(after: index)
                 if nextIndex < buffer.endIndex && buffer[nextIndex] == "\n" {
-                    let position = buffer.distance(from: buffer.startIndex, to: buffer.index(after: nextIndex))
-                    if position >= minimumSentenceLength {
-                        return position
+                    let endIndex = buffer.index(after: nextIndex)
+                    if isLongEnoughSentence(endingAt: endIndex) {
+                        return buffer.distance(from: buffer.startIndex, to: endIndex)
                     }
                 }
             }
@@ -123,6 +114,14 @@ final class SentenceAccumulator {
         }
 
         return nil
+    }
+
+    /// The minimum applies to the text that would actually be emitted. Measuring the raw
+    /// buffer instead let leading or trailing newlines push a short fragment over the limit;
+    /// it was then rejected after trimming, and the same boundary was found again on every
+    /// later chunk, so nothing more was emitted until the final flush.
+    private func isLongEnoughSentence(endingAt endIndex: String.Index) -> Bool {
+        buffer[..<endIndex].trimmingCharacters(in: .whitespacesAndNewlines).count >= minimumSentenceLength
     }
 
     /// Check if the period at the given position is part of an abbreviation

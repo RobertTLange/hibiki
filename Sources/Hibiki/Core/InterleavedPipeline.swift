@@ -12,6 +12,20 @@ struct InterleavedPipelineResult {
     let ttsInputTokens: Int
     let summarizationModel: String
     let translationModel: String?
+
+    func with(ttsInputTokens: Int) -> InterleavedPipelineResult {
+        InterleavedPipelineResult(
+            summarizedText: summarizedText,
+            translatedText: translatedText,
+            summarizationInputTokens: summarizationInputTokens,
+            summarizationOutputTokens: summarizationOutputTokens,
+            translationInputTokens: translationInputTokens,
+            translationOutputTokens: translationOutputTokens,
+            ttsInputTokens: ttsInputTokens,
+            summarizationModel: summarizationModel,
+            translationModel: translationModel
+        )
+    }
 }
 
 /// Configuration for the interleaved pipeline
@@ -69,12 +83,22 @@ final class InterleavedPipeline {
     private var translationInputTokens = 0
     private var translationOutputTokens = 0
     private var ttsInputTokens = 0
+    /// Result of the text stages, held until the TTS queue drains.
+    private var textStageResult: InterleavedPipelineResult?
+
+    /// TTS tokens for sentences sent so far, including the one in flight.
+    var ttsInputTokensSoFar: Int {
+        max(ttsInputTokens, ttsService.estimatedInputTokensSoFar)
+    }
 
     // Callbacks
     var onSummarySentence: ((String) -> Void)?
     var onTranslatedSentence: ((String) -> Void)?
     var onAudioChunk: ((Data) -> Void)?
     var onProgress: ((String) -> Void)?  // Status updates
+    /// Text stages are done (summary/translation final); audio may still be synthesizing.
+    var onTextComplete: ((InterleavedPipelineResult) -> Void)?
+    /// Every sentence has been synthesized and delivered through `onAudioChunk`.
     var onComplete: ((InterleavedPipelineResult) -> Void)?
     var onError: ((Error) -> Void)?
 
@@ -103,11 +127,11 @@ final class InterleavedPipeline {
             isCancelled = true
             currentTask?.cancel()
             currentTask = nil
-            llmService.cancel()
             ttsService.cancel()
         }
 
         // Reset state
+        resumeChunkProcessingWaiters()
         isCancelled = false
         summarizedSentences = []
         translatedSentences = []
@@ -116,6 +140,7 @@ final class InterleavedPipeline {
         translationInputTokens = 0
         translationOutputTokens = 0
         ttsInputTokens = 0
+        textStageResult = nil
         sentenceAccumulator.reset()
         pendingChunks = []
         isProcessingChunks = false
@@ -130,15 +155,29 @@ final class InterleavedPipeline {
         }
     }
 
-    /// Cancel the pipeline (can be called from any context, dispatches to MainActor)
-    nonisolated func cancel() {
-        Task { @MainActor in
-            self.logger.info("Cancelling interleaved pipeline", source: "InterleavedPipeline")
-            self.isCancelled = true
-            self.currentTask?.cancel()
-            self.llmService.cancel()
-            self.ttsService.cancel()
-        }
+    /// Cancel the pipeline. Synchronous, so a run started right afterwards cannot be hit by
+    /// a deferred cancellation meant for its predecessor.
+    func cancel() {
+        logger.info("Cancelling interleaved pipeline", source: "InterleavedPipeline")
+        isCancelled = true
+        invalidateCurrentRun()
+        textStageResult = nil
+        currentTask?.cancel()
+        currentTask = nil
+        ttsService.cancel()
+    }
+
+    /// True while `runId` is the run in progress. Everything that resumes after an `await`
+    /// checks this: per-sentence work runs in unstructured tasks that task cancellation does
+    /// not reach, and a new run resets `isCancelled`, so the run id is the only reliable fence.
+    private func isCurrent(_ runId: UUID) -> Bool {
+        self.runId == runId && !isCancelled
+    }
+
+    /// Retire the current run id (stop, error) so its pending continuations fall through.
+    private func invalidateCurrentRun() {
+        runId = UUID()
+        resumeChunkProcessingWaiters()
     }
 
     /// Run the interleaved pipeline
@@ -151,20 +190,29 @@ final class InterleavedPipeline {
             // Start TTS pipeline session
             ttsService.startPipeline(
                 configuration: config.ttsConfiguration,
+                // TTS callbacks arrive on URLSession queues. Hop through the main queue (FIFO)
+                // so the completion can never overtake the last audio chunk.
                 onAudioChunk: { [weak self] data in
-                    Task { @MainActor in
-                        self?.onAudioChunk?(data)
+                    DispatchQueue.main.async {
+                        guard let self, self.runId == runId, !self.isCancelled else { return }
+                        self.onAudioChunk?(data)
                     }
                 },
                 onSentenceComplete: { [weak self] tokens in
-                    self?.ttsInputTokens += tokens
+                    DispatchQueue.main.async {
+                        guard let self, self.runId == runId else { return }
+                        self.ttsInputTokens += tokens
+                    }
                 },
                 onAllComplete: { [weak self] totalTokens in
-                    self?.logger.debug("TTS pipeline complete: \(totalTokens) tokens", source: "InterleavedPipeline")
+                    DispatchQueue.main.async {
+                        self?.finishRun(runId: runId, ttsTokens: totalTokens)
+                    }
                 },
                 onError: { [weak self] error in
-                    Task { @MainActor in
-                        self?.handleError(InterleavedPipelineError.ttsFailed(error))
+                    DispatchQueue.main.async {
+                        guard let self, self.runId == runId else { return }
+                        self.handleError(InterleavedPipelineError.ttsFailed(error))
                     }
                 }
             )
@@ -179,26 +227,35 @@ final class InterleavedPipeline {
                 systemPrompt: config.summarizationPrompt,
                 apiKey: config.openAIAPIKey,
                 onChunk: { [weak self] chunk in
-                    guard let self = self, !self.isCancelled else { return }
+                    // A chunk already in flight when its run was replaced must not join the new run.
+                    guard let self = self, self.runId == runId, !self.isCancelled else { return }
                     // Queue chunk for sequential processing
                     self.pendingChunks.append(chunk)
                     Task { @MainActor in
-                        await self.processQueuedChunks(config: config)
+                        await self.processQueuedChunks(config: config, runId: runId)
                     }
                 }
             )
 
-            guard !isCancelled else {
+            guard isCurrent(runId) else {
                 throw InterleavedPipelineError.cancelled
             }
 
             // Process any remaining queued chunks before flushing
-            await processQueuedChunks(config: config)
+            await processQueuedChunks(config: config, runId: runId)
             await waitForChunkProcessingToFinish()
+            guard isCurrent(runId) else {
+                throw InterleavedPipelineError.cancelled
+            }
 
             // Flush remaining summarization text
             if let remaining = sentenceAccumulator.flush() {
-                await processSummarizedSentence(remaining, config: config)
+                await processSummarizedSentence(remaining, config: config, runId: runId)
+            }
+            // Stopped (or failed) while the last sentences were being translated: the text
+            // result must not be delivered into whatever is playing now.
+            guard isCurrent(runId) else {
+                throw InterleavedPipelineError.cancelled
             }
 
             summarizationInputTokens = llmResult.inputTokens
@@ -210,13 +267,7 @@ final class InterleavedPipeline {
             logger.debug("summarizedSentences contents: \(summarizedSentences)", source: "InterleavedPipeline")
             logger.debug("translatedSentences contents: \(translatedSentences)", source: "InterleavedPipeline")
 
-            // Wait a moment for TTS queue to process remaining sentences
-            try await Task.sleep(nanoseconds: 500_000_000)  // 0.5s
-
-            // Mark TTS as complete
-            ttsService.markAllSentencesEnqueued()
-
-            // Build final result
+            // Build the text result
             let fullSummary = summarizedSentences.joined(separator: " ")
             let fullTranslation = config.targetLanguage != .none
                 ? translatedSentences.joined(separator: " ")
@@ -236,14 +287,12 @@ final class InterleavedPipeline {
                 translationModel: config.targetLanguage != .none ? config.translationModel.rawValue : nil
             )
 
-            // Check if this run is still current (not superseded by a new run)
-            guard self.runId == runId else {
-                logger.info("Pipeline run \(runId) superseded by new run \(self.runId), discarding result", source: "InterleavedPipeline")
-                return
-            }
+            logger.info("Pipeline run \(runId) text stages complete; waiting for TTS queue", source: "InterleavedPipeline")
+            textStageResult = result
+            onTextComplete?(result)
 
-            logger.info("Pipeline run \(runId) complete", source: "InterleavedPipeline")
-            onComplete?(result)
+            // Completion is reported from finishRun once the TTS queue has drained.
+            ttsService.markAllSentencesEnqueued()
 
         } catch {
             // Only report errors for the current run
@@ -259,7 +308,8 @@ final class InterleavedPipeline {
 
     /// Process queued chunks sequentially to avoid race conditions
     @MainActor
-    private func processQueuedChunks(config: InterleavedPipelineConfig) async {
+    private func processQueuedChunks(config: InterleavedPipelineConfig, runId: UUID) async {
+        guard isCurrent(runId) else { return }
         // Ensure only one processing task runs at a time
         guard !isProcessingChunks else {
             logger.debug("processQueuedChunks: already processing, returning (pendingChunks: \(pendingChunks.count))", source: "InterleavedPipeline")
@@ -268,7 +318,7 @@ final class InterleavedPipeline {
         isProcessingChunks = true
         logger.debug("processQueuedChunks: starting processing (pendingChunks: \(pendingChunks.count))", source: "InterleavedPipeline")
 
-        while !pendingChunks.isEmpty && !isCancelled {
+        while !pendingChunks.isEmpty && isCurrent(runId) {
             let chunk = pendingChunks.removeFirst()
             logger.debug("processQueuedChunks: processing chunk (\(chunk.count) chars), remaining: \(pendingChunks.count)", source: "InterleavedPipeline")
 
@@ -277,9 +327,12 @@ final class InterleavedPipeline {
             logger.debug("processQueuedChunks: extracted \(sentences.count) sentences", source: "InterleavedPipeline")
 
             for sentence in sentences {
-                await processSummarizedSentence(sentence, config: config)
+                await processSummarizedSentence(sentence, config: config, runId: runId)
             }
         }
+
+        // A newer run owns the queue and the processing flag now; leave them alone.
+        guard self.runId == runId else { return }
 
         logger.debug("processQueuedChunks: finished (pendingChunks: \(pendingChunks.count), cancelled: \(isCancelled))", source: "InterleavedPipeline")
         finishChunkProcessing()
@@ -287,8 +340,8 @@ final class InterleavedPipeline {
 
     /// Process a complete summarized sentence through translation and TTS
     @MainActor
-    private func processSummarizedSentence(_ sentence: String, config: InterleavedPipelineConfig) async {
-        guard !isCancelled else { return }
+    private func processSummarizedSentence(_ sentence: String, config: InterleavedPipelineConfig, runId: UUID) async {
+        guard isCurrent(runId) else { return }
 
         let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -309,11 +362,12 @@ final class InterleavedPipeline {
                 let translationResult = try await translateWithRetry(
                     sentence: trimmed,
                     context: translatedSentences.suffix(2).map { $0 },
-                    config: config
+                    config: config,
+                    runId: runId
                 )
                 let translated = translationResult.translatedText
 
-                guard !isCancelled else {
+                guard isCurrent(runId) else {
                     logger.debug("Translation cancelled after completion for sentence \(summarizedSentences.count)", source: "InterleavedPipeline")
                     return
                 }
@@ -336,7 +390,7 @@ final class InterleavedPipeline {
                 }
 
             } catch {
-                guard !isCancelled else {
+                guard isCurrent(runId) else {
                     logger.debug("Translation error but cancelled, skipping sentence \(summarizedSentences.count)", source: "InterleavedPipeline")
                     return
                 }
@@ -347,17 +401,30 @@ final class InterleavedPipeline {
         }
 
         // Stage 3: Queue for TTS
-        guard !isCancelled else { return }
+        guard isCurrent(runId) else { return }
         onProgress?("Speaking...")
         ttsService.enqueueSentence(textForTTS)
+    }
+
+    /// Called once the TTS service has synthesized every enqueued sentence.
+    private func finishRun(runId: UUID, ttsTokens: Int) {
+        guard self.runId == runId, !isCancelled, let textResult = textStageResult else {
+            logger.debug("Ignoring TTS completion for stale or cancelled run \(runId)", source: "InterleavedPipeline")
+            return
+        }
+        textStageResult = nil
+        ttsInputTokens = ttsTokens
+        logger.info("Pipeline run \(runId) complete: \(ttsTokens) TTS tokens", source: "InterleavedPipeline")
+        onComplete?(textResult.with(ttsInputTokens: ttsTokens))
     }
 
     /// Handle pipeline errors
     private func handleError(_ error: Error) {
         logger.error("Pipeline error: \(error.localizedDescription)", source: "InterleavedPipeline")
         isCancelled = true
+        invalidateCurrentRun()
+        textStageResult = nil
         currentTask?.cancel()
-        llmService.cancel()
         ttsService.cancel()
         onError?(error)
     }
@@ -375,6 +442,10 @@ final class InterleavedPipeline {
     @MainActor
     private func finishChunkProcessing() {
         isProcessingChunks = false
+        resumeChunkProcessingWaiters()
+    }
+
+    private func resumeChunkProcessingWaiters() {
         guard !chunkProcessingWaiters.isEmpty else { return }
         let waiters = chunkProcessingWaiters
         chunkProcessingWaiters.removeAll()
@@ -389,11 +460,12 @@ final class InterleavedPipeline {
         sentence: String,
         context: [String],
         config: InterleavedPipelineConfig,
+        runId: UUID,
         maxAttempts: Int = 3
     ) async throws -> TranslationResult {
         var lastError: Error?
         for attempt in 0..<maxAttempts {
-            guard !isCancelled else {
+            guard isCurrent(runId) else {
                 throw InterleavedPipelineError.cancelled
             }
             do {

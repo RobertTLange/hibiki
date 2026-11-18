@@ -43,7 +43,7 @@ let package = Package(
         ),
         .testTarget(
             name: "HibikiTests",
-            dependencies: ["HibikiShared", "HibikiPocketRuntime", "HibikiCLICore"],
+            dependencies: ["Hibiki", "HibikiCLI", "HibikiShared", "HibikiPocketRuntime", "HibikiCLICore"],
             path: "Tests/HibikiTests"
         ),
         .executableTarget(

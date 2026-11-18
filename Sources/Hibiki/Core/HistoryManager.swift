@@ -48,6 +48,10 @@ final class HistoryManager {
         migrateRetentionSettingsIfNeeded()
         ensureDirectoriesExist()
         loadHistory()
+        // Before pruning: seed the usage ledger with everything history still remembers.
+        UsageLedger.shared.seedIfNeeded(from: entries) { [self] entry in
+            Int(audioFileSize(for: entry) ?? 0)
+        }
         let previousCount = entries.count
         enforceRetentionPolicy()
         if entries.count != previousCount {
@@ -62,6 +66,7 @@ final class HistoryManager {
         text: String,
         voice: String,
         inputTokens: Int,
+        ttsBilling: TTSBilling,
         audioData: Data,
         summarizedText: String? = nil,
         llmInputTokens: Int? = nil,
@@ -81,6 +86,11 @@ final class HistoryManager {
             voice: voice,
             inputTokens: inputTokens,
             audioFileName: audioFileName,
+            ttsCost: TTSPricing.cost(
+                billing: ttsBilling,
+                inputTokens: inputTokens,
+                audioSeconds: Double(audioData.count) / 48_000.0  // 24kHz 16-bit mono
+            ),
             summarizedText: summarizedText,
             llmInputTokens: llmInputTokens,
             llmOutputTokens: llmOutputTokens,
@@ -102,6 +112,7 @@ final class HistoryManager {
         }
 
         DispatchQueue.main.async {
+            UsageLedger.shared.record(entry: entry, audioByteCount: audioData.count)
             self.entries.insert(entry, at: 0)
             self.enforceRetentionPolicy()
             self.saveHistory()
@@ -126,11 +137,12 @@ final class HistoryManager {
     }
 
     func clearAllHistory() {
-        // Delete all audio files
+        // Delete all audio files, and any set-aside copy of an unreadable history
         let audioURLs = entries.map { audioDirectory.appendingPathComponent($0.audioFileName) }
+        let backupURLs = unreadableHistoryBackups()
         fileIOQueue.async {
-            for audioURL in audioURLs {
-                try? FileManager.default.removeItem(at: audioURL)
+            for url in audioURLs + backupURLs {
+                try? FileManager.default.removeItem(at: url)
             }
         }
 
@@ -205,7 +217,8 @@ final class HistoryManager {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
             let data = try encoder.encode(entries)
-            try data.write(to: historyFile)
+            // Atomic: a crash or kill mid-write must not leave a truncated file behind.
+            try data.write(to: historyFile, options: .atomic)
         } catch {
             print("[Hibiki] Failed to save history: \(error)")
         }
@@ -216,11 +229,65 @@ final class HistoryManager {
 
         do {
             let data = try Data(contentsOf: historyFile)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            entries = try decoder.decode([HistoryEntry].self, from: data)
+            let decoded = try Self.decodeEntries(from: data)
+            entries = decoded.entries
+            if decoded.droppedCount > 0 {
+                print("[Hibiki] Skipped \(decoded.droppedCount) unreadable history entries")
+                preserveUnreadableHistoryFile(removingOriginal: false)
+                // Rewrite without the damaged entries, or every launch would take another copy.
+                saveHistory()
+            }
         } catch {
+            // The next save would overwrite the file with an empty history; keep it instead.
             print("[Hibiki] Failed to load history: \(error)")
+            preserveUnreadableHistoryFile(removingOriginal: true)
+        }
+    }
+
+    /// Decodes the history file entry by entry, so a single entry that no longer matches the
+    /// schema (or is damaged) costs that entry instead of the whole history.
+    static func decodeEntries(from data: Data) throws -> (entries: [HistoryEntry], droppedCount: Int) {
+        struct Lossy: Decodable {
+            let entry: HistoryEntry?
+
+            init(from decoder: Decoder) throws {
+                entry = try? HistoryEntry(from: decoder)
+            }
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode([Lossy].self, from: data)
+        let entries = decoded.compactMap(\.entry)
+        return (entries, decoded.count - entries.count)
+    }
+
+    private static let unreadableBackupPrefix = "history.unreadable-"
+
+    /// Backups of history files that could not be (fully) read. They hold spoken text, so
+    /// only the newest is kept and clearing the history removes them too.
+    private func unreadableHistoryBackups() -> [URL] {
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: appSupportDirectory, includingPropertiesForKeys: nil
+        )) ?? []
+        return files.filter { $0.lastPathComponent.hasPrefix(Self.unreadableBackupPrefix) }
+    }
+
+    private func preserveUnreadableHistoryFile(removingOriginal: Bool) {
+        for stale in unreadableHistoryBackups() {
+            try? FileManager.default.removeItem(at: stale)
+        }
+        let stamp = Int(Date().timeIntervalSince1970)
+        let backup = appSupportDirectory.appendingPathComponent("\(Self.unreadableBackupPrefix)\(stamp).json")
+        do {
+            if removingOriginal {
+                try FileManager.default.moveItem(at: historyFile, to: backup)
+            } else {
+                try FileManager.default.copyItem(at: historyFile, to: backup)
+            }
+            print("[Hibiki] Kept unreadable history as \(backup.lastPathComponent)")
+        } catch {
+            print("[Hibiki] Could not preserve unreadable history file: \(error)")
         }
     }
 

@@ -5,6 +5,17 @@ public final class PocketTTSRuntimeManager: ObservableObject {
     private static let minimumPythonMajor = 3
     private static let minimumPythonMinor = 10
     private static let minimumPythonSpecifier = "3.10"
+    private static let startupTimeoutSeconds: TimeInterval = 120
+
+    /// The pocket-tts release the managed runtime installs. Pinned because an unpinned
+    /// install silently picked up 2.0, whose `serve` command dropped an option Hibiki
+    /// passed, and the server stopped starting. Bump deliberately, after checking
+    /// `serve --help`, `/health`, `/openapi.json` and `/tts` against the new release.
+    public static let pinnedPocketTTSVersion = "4.0.1"
+
+    static func installArguments(pythonBinary: String) -> [String] {
+        ["pip", "install", "--python", pythonBinary, "pocket-tts==\(pinnedPocketTTSVersion)"]
+    }
 
     @Published public private(set) var status: PocketRuntimeStatus = .notInstalled
     @Published public private(set) var recentLogs: [String] = []
@@ -24,7 +35,6 @@ public final class PocketTTSRuntimeManager: ObservableObject {
     private struct ServerLaunchConfig {
         let host: String
         let port: Int
-        let voice: String
         let venvPath: String?
         let autoRestart: Bool
     }
@@ -35,7 +45,6 @@ public final class PocketTTSRuntimeManager: ObservableObject {
     private var logFileHandle: FileHandle?
     private let fileManager = FileManager.default
     private let ioQueue = DispatchQueue(label: "com.hibiki.pocket-runtime.io")
-    private var isStopping = false
     private var restartAttempt = 0
     private var launchConfig: ServerLaunchConfig?
     public static func defaultVenvPath() -> String {
@@ -83,13 +92,23 @@ public final class PocketTTSRuntimeManager: ObservableObject {
         lastError = nil
         appendLogLine("Installing Pocket TTS runtime with uv...")
 
+        // Validate the target before anything touches the disk: the path is user-editable
+        // and the install replaces whatever lives there.
+        let paths = runtimePaths(venvPath: venvPath)
+        guard Self.isReplaceableVenvDirectory(paths.venvDirectory) else {
+            let error = PocketRuntimeError.unsafeVenvPath(paths.venvDirectory.path)
+            status = .failed
+            lastError = error.localizedDescription
+            appendLogLine(error.localizedDescription)
+            throw error
+        }
+
         guard let uvBinary = resolveUVBinary() else {
             status = .failed
             lastError = PocketRuntimeError.uvMissing.localizedDescription
             throw PocketRuntimeError.uvMissing
         }
 
-        let paths = runtimePaths(venvPath: venvPath)
         try ensureDirectories(paths: paths)
 
         if fileManager.fileExists(atPath: paths.venvDirectory.path) {
@@ -133,14 +152,7 @@ public final class PocketTTSRuntimeManager: ObservableObject {
 
         let installResult = try await runCommand(
             executablePath: uvBinary,
-            arguments: [
-                "pip",
-                "install",
-                "--python",
-                paths.pythonBinary.path,
-                "--upgrade",
-                "pocket-tts"
-            ]
+            arguments: Self.installArguments(pythonBinary: paths.pythonBinary.path)
         )
         guard installResult.exitCode == 0 else {
             status = .failed
@@ -157,7 +169,6 @@ public final class PocketTTSRuntimeManager: ObservableObject {
     public func startServer(
         host: String,
         port: Int,
-        voice: String,
         venvPath: String? = nil,
         autoRestart: Bool = false
     ) async throws {
@@ -169,8 +180,6 @@ public final class PocketTTSRuntimeManager: ObservableObject {
             throw error
         }
 
-        let normalizedVoice = voice.trimmingCharacters(in: .whitespacesAndNewlines)
-        let effectiveVoice = normalizedVoice.isEmpty ? "alba" : normalizedVoice
         let paths = runtimePaths(venvPath: venvPath)
 
         guard fileManager.isExecutableFile(atPath: paths.pocketBinary.path) else {
@@ -179,18 +188,23 @@ public final class PocketTTSRuntimeManager: ObservableObject {
             throw PocketRuntimeError.runtimeNotInstalled
         }
 
-        stopServer()
+        // Let the previous server release its port before the replacement binds it.
+        if let previous = detachServerProcess() {
+            await waitForExit(of: previous)
+            // Another start ran while this one was waiting; it owns the server now.
+            guard serverProcess == nil else {
+                throw PocketRuntimeError.superseded
+            }
+        }
 
         try ensureDirectories(paths: paths)
         try openLogHandle(paths: paths)
 
-        isStopping = false
         status = .starting
         lastError = nil
         launchConfig = ServerLaunchConfig(
             host: normalizedHost,
             port: port,
-            voice: effectiveVoice,
             venvPath: venvPath,
             autoRestart: autoRestart
         )
@@ -198,13 +212,15 @@ public final class PocketTTSRuntimeManager: ObservableObject {
 
         let process = Process()
         process.executableURL = paths.pocketBinary
+        // No voice here: every /tts request names its voice, and the server-side option
+        // has not been stable across releases (`serve --voice` was removed in pocket-tts 2.0,
+        // after which the server refused to start).
         process.arguments = [
             "serve",
             "--host", normalizedHost,
-            "--port", String(port),
-            "--voice", effectiveVoice
+            "--port", String(port)
         ]
-        process.environment = ProcessInfo.processInfo.environment
+        process.environment = Self.childEnvironment()
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -228,7 +244,7 @@ public final class PocketTTSRuntimeManager: ObservableObject {
 
         process.terminationHandler = { [weak self] process in
             Task { @MainActor [weak self] in
-                self?.handleProcessTermination(exitCode: process.terminationStatus)
+                self?.handleProcessTermination(of: process)
             }
         }
 
@@ -237,13 +253,36 @@ public final class PocketTTSRuntimeManager: ObservableObject {
         } catch {
             status = .failed
             lastError = PocketRuntimeError.startupFailed(message: error.localizedDescription).localizedDescription
+            serverProcess = nil
             cleanupPipesAndHandles()
             throw PocketRuntimeError.startupFailed(message: error.localizedDescription)
         }
 
         let baseURL = Self.baseURL(host: normalizedHost, port: port)
-        let healthy = await waitForHealthy(baseURL: baseURL, timeoutSeconds: 20)
-        if healthy, serverProcess?.isRunning == true {
+        // Generous: the first start downloads the model weights (~40s on a fast connection).
+        // The wait ends early if the process exits.
+        let healthy = await waitForHealthy(of: process, baseURL: baseURL, timeoutSeconds: Self.startupTimeoutSeconds)
+
+        // The server died while starting (typically: the port is taken). Callers may try
+        // another port, so this must stay distinct from a timeout.
+        guard process.isRunning else {
+            if serverProcess === process {
+                detachServerProcess()
+            }
+            let error = PocketRuntimeError.startupFailed(
+                message: "The server exited during startup (code \(process.terminationStatus))."
+            )
+            status = .failed
+            lastError = error.localizedDescription
+            throw error
+        }
+
+        // A newer start/stop call took over while this one was waiting; leave its state alone.
+        guard serverProcess === process else {
+            throw PocketRuntimeError.superseded
+        }
+
+        if healthy {
             status = .running
             restartAttempt = 0
             appendLogLine("Pocket TTS server is healthy.")
@@ -258,35 +297,48 @@ public final class PocketTTSRuntimeManager: ObservableObject {
 
     @MainActor
     public func stopServer() {
-        guard let process = serverProcess else {
-            status = .stopped
-            cleanupPipesAndHandles()
-            return
+        if detachServerProcess() != nil {
+            appendLogLine("Pocket TTS server stopped.")
         }
+        status = .stopped
+    }
 
-        isStopping = true
-        if process.isRunning {
+    /// Terminates the current server and forgets it, so its exit is never mistaken for a crash
+    /// of whatever server is started next.
+    @MainActor
+    @discardableResult
+    private func detachServerProcess() -> Process? {
+        let process = serverProcess
+        serverProcess = nil
+        cleanupPipesAndHandles()
+        if let process, process.isRunning {
             process.terminate()
         }
+        return process
+    }
 
-        stdoutPipe?.fileHandleForReading.readabilityHandler = nil
-        stderrPipe?.fileHandleForReading.readabilityHandler = nil
-        status = .stopped
+    @MainActor
+    private func waitForExit(of process: Process, timeoutSeconds: TimeInterval = 3) async {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while process.isRunning, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        if process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+        }
     }
 
     @MainActor
     public func restartServer(
         host: String,
         port: Int,
-        voice: String,
         venvPath: String? = nil,
         autoRestart: Bool = false
     ) async throws {
-        stopServer()
+        // startServer stops the current server itself and waits for it to release the port.
         try await startServer(
             host: host,
             port: port,
-            voice: voice,
             venvPath: venvPath,
             autoRestart: autoRestart
         )
@@ -355,21 +407,21 @@ public final class PocketTTSRuntimeManager: ObservableObject {
     }
 
     @MainActor
-    private func waitForHealthy(baseURL: String, timeoutSeconds: TimeInterval) async -> Bool {
+    private func waitForHealthy(of process: Process, baseURL: String, timeoutSeconds: TimeInterval) async -> Bool {
         let deadline = Date().addingTimeInterval(timeoutSeconds)
         while Date() < deadline {
             if Task.isCancelled {
                 return false
             }
-            guard serverProcess?.isRunning == true else {
+            guard serverProcess === process, process.isRunning else {
                 return false
             }
             let health = await healthCheck(baseURL: baseURL)
+            guard serverProcess === process, process.isRunning else {
+                return false
+            }
             if health.isHealthy {
                 return true
-            }
-            guard serverProcess?.isRunning == true else {
-                return false
             }
             try? await Task.sleep(nanoseconds: 300_000_000)
         }
@@ -405,20 +457,19 @@ public final class PocketTTSRuntimeManager: ObservableObject {
     }
 
     @MainActor
-    private func handleProcessTermination(exitCode: Int32) {
-        defer {
-            serverProcess = nil
-            cleanupPipesAndHandles()
-        }
+    private func handleProcessTermination(of process: Process) {
+        // Servers stopped on purpose are detached first, so only the current one can crash.
+        guard process === serverProcess else { return }
 
-        if isStopping {
-            isStopping = false
-            status = .stopped
-            appendLogLine("Pocket TTS server stopped.")
-            return
-        }
+        let exitCode = process.terminationStatus
+        serverProcess = nil
+        cleanupPipesAndHandles()
 
         appendLogLine("Pocket TTS server exited unexpectedly (\(exitCode)).")
+
+        // Still starting: startServer is waiting on this process and reports the failure.
+        // Auto-restart is for a server that was up and then crashed.
+        guard status != .starting else { return }
 
         guard let config = launchConfig, config.autoRestart, restartAttempt < 5 else {
             status = .failed
@@ -440,7 +491,6 @@ public final class PocketTTSRuntimeManager: ObservableObject {
                 try await self.startServer(
                     host: config.host,
                     port: config.port,
-                    voice: config.voice,
                     venvPath: config.venvPath,
                     autoRestart: config.autoRestart
                 )
@@ -451,8 +501,27 @@ public final class PocketTTSRuntimeManager: ObservableObject {
         }
     }
 
+    /// Whether an install may delete and recreate `directory`.
+    /// Only a missing path, an empty directory, or an existing virtualenv (has `pyvenv.cfg`) qualifies.
+    static func isReplaceableVenvDirectory(_ directory: URL, fileManager: FileManager = .default) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory) else {
+            return true
+        }
+        guard isDirectory.boolValue else {
+            return false
+        }
+        if fileManager.fileExists(atPath: directory.appendingPathComponent("pyvenv.cfg").path) {
+            return true
+        }
+        let contents = try? fileManager.contentsOfDirectory(atPath: directory.path)
+        return contents?.isEmpty == true
+    }
+
     private func runtimePaths(venvPath: String?) -> RuntimePaths {
-        let resolvedVenvPath = normalizedPath(venvPath ?? Self.defaultVenvPath())
+        // A blank path would resolve to the process working directory.
+        let trimmedVenvPath = venvPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let resolvedVenvPath = normalizedPath(trimmedVenvPath.isEmpty ? Self.defaultVenvPath() : trimmedVenvPath)
         let venvDirectory = URL(fileURLWithPath: resolvedVenvPath, isDirectory: true)
         let baseDirectory = venvDirectory.deletingLastPathComponent()
         let logDirectory = baseDirectory.appendingPathComponent("logs", isDirectory: true)
@@ -481,7 +550,8 @@ public final class PocketTTSRuntimeManager: ObservableObject {
         }
         let handle = try FileHandle(forWritingTo: paths.logFile)
         handle.seekToEndOfFile()
-        logFileHandle = handle
+        // logFileHandle is confined to ioQueue; a queued close from the previous server runs first.
+        ioQueue.sync { logFileHandle = handle }
     }
 
     private func cleanupPipesAndHandles() {
@@ -529,7 +599,7 @@ public final class PocketTTSRuntimeManager: ObservableObject {
         }
     }
 
-    private func runCommand(
+    func runCommand(
         executablePath: String,
         arguments: [String]
     ) async throws -> (exitCode: Int32, output: String) {
@@ -537,22 +607,26 @@ public final class PocketTTSRuntimeManager: ObservableObject {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: executablePath)
             process.arguments = arguments
-            process.environment = ProcessInfo.processInfo.environment
+            process.environment = Self.childEnvironment()
 
             let outputPipe = Pipe()
             process.standardOutput = outputPipe
             process.standardError = outputPipe
 
-            process.terminationHandler = { process in
-                let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: data, encoding: .utf8) ?? ""
-                continuation.resume(returning: (process.terminationStatus, output))
-            }
-
             do {
                 try process.run()
             } catch {
                 continuation.resume(throwing: error)
+                return
+            }
+
+            // Drain while the child runs: reading only after exit deadlocks once the
+            // pipe buffer (~64KB) fills, e.g. on a verbose `uv pip install`.
+            DispatchQueue.global(qos: .utility).async {
+                let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                let output = String(data: data, encoding: .utf8) ?? ""
+                continuation.resume(returning: (process.terminationStatus, output))
             }
         }
     }
@@ -653,10 +727,20 @@ public final class PocketTTSRuntimeManager: ObservableObject {
             return false
         }
     }
+    /// Environment for `uv` and the Pocket server. Cloud API keys (often present via
+    /// `launchctl setenv`) are none of a local model server's business.
+    static func childEnvironment(
+        from environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String: String] {
+        environment.filter { key, _ in
+            !["OPENAI_API_KEY", "ELEVENLABS_API_KEY"].contains(key)
+        }
+    }
+
     public static func baseURL(host: String, port: Int) -> String {
         "http://\(host):\(port)"
     }
-    private static func isLoopbackHost(_ host: String) -> Bool {
+    public static func isLoopbackHost(_ host: String) -> Bool {
         let normalized = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return normalized == "127.0.0.1" || normalized == "localhost" || normalized == "::1"
     }

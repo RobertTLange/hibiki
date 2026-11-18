@@ -48,7 +48,10 @@ final class StreamingAudioPlayer {
     private let minimumBufferSize = 4800 // 0.2 seconds at 24kHz
     private var bufferedSampleCount = 0
     private var hasStartedPlayback = false
-    private var isEngineRunning = false
+    /// False between `stop()` and the next `reset()`: audio that arrives late from a
+    /// stopped request must not restart playback.
+    private var isAcceptingAudio = true
+    private var configurationObserver: NSObjectProtocol?
 
     // Playback completion tracking
     private var scheduledBufferCount = 0
@@ -118,6 +121,31 @@ final class StreamingAudioPlayer {
         )!
 
         setupAudioEngine()
+        observeEngineConfigurationChanges()
+    }
+
+    /// The engine stops itself when the output device changes (AirPods connect, headphones
+    /// unplugged). Bring it back so buffers keep draining instead of playback hanging.
+    private func observeEngineConfigurationChanges() {
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: audioEngine,
+            queue: nil
+        ) { [weak self] _ in
+            self?.bufferQueue.async {
+                guard let self, self.hasStartedPlayback, !self.isStopping else { return }
+                do {
+                    if !self.audioEngine.isRunning {
+                        try self.audioEngine.start()
+                    }
+                    if !self.isPaused {
+                        self.playerNode.play()
+                    }
+                } catch {
+                    print("[Hibiki] ❌ Failed to restart audio engine after device change: \(error)")
+                }
+            }
+        }
     }
 
     private func setupAudioEngine() {
@@ -173,7 +201,7 @@ final class StreamingAudioPlayer {
 
     func enqueue(pcmData: Data) {
         bufferQueue.async { [weak self] in
-            guard let self = self, !self.isStopping else { return }
+            guard let self = self, !self.isStopping, self.isAcceptingAudio else { return }
 
             if !pcmData.isEmpty {
                 self.pendingPCMBytes.append(pcmData)
@@ -240,10 +268,9 @@ final class StreamingAudioPlayer {
 
     private func startPlayback() {
         do {
-            if !isEngineRunning {
+            if !audioEngine.isRunning {
                 print("[Hibiki] 🎵 Starting audio engine...")
                 try audioEngine.start()
-                isEngineRunning = true
                 print("[Hibiki] ✅ Audio engine started")
             }
 
@@ -305,7 +332,10 @@ final class StreamingAudioPlayer {
         let generation = playbackGeneration
         scheduledBufferCount += 1
         totalScheduledSamples += Int64(buffer.frameLength)
-        playerNode.scheduleBuffer(buffer) { [weak self] in
+        // `.dataPlayedBack`: the handler runs once the audio has left the output, not when the
+        // player has merely consumed the buffer. Completion stops the engine, so reporting
+        // early would cut off the end of the speech still in the time-pitch node and device.
+        playerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             self?.bufferQueue.async {
                 guard let self = self else { return }
                 // Ignore callbacks from old playback sessions or during stopping
@@ -319,7 +349,7 @@ final class StreamingAudioPlayer {
     /// Call this when the TTS stream has finished sending data
     func markStreamComplete() {
         bufferQueue.async { [weak self] in
-            guard let self = self, !self.isStopping else { return }
+            guard let self = self, !self.isStopping, self.isAcceptingAudio else { return }
             if !self.pendingPCMBytes.isEmpty {
                 let bytesPerFrame = Int(self.pcmFormat.streamDescription.pointee.mBytesPerFrame)
                 if self.pendingPCMBytes.count % bytesPerFrame != 0 {
@@ -344,9 +374,18 @@ final class StreamingAudioPlayer {
     private func checkPlaybackComplete() {
         // Only fire completion when stream is done AND all buffers played
         guard !isStopping else { return }
-        if isStreamFinished && completedBufferCount >= scheduledBufferCount && scheduledBufferCount > 0 {
+        // A finished stream with nothing scheduled (empty or whitespace-only text, provider
+        // returned no audio) still has to complete, or the request queue blocks forever.
+        if isStreamFinished && completedBufferCount >= scheduledBufferCount {
+            // Tie the notification to this playback session: if playback is stopped or
+            // restarted before the main queue gets to it, it must not be delivered to (and
+            // end) the session that replaced it.
+            let generation = playbackGeneration
             DispatchQueue.main.async { [weak self] in
-                self?.onPlaybackComplete?()
+                guard let self else { return }
+                let isSameSession = self.bufferQueue.sync { self.playbackGeneration == generation }
+                guard isSameSession else { return }
+                self.onPlaybackComplete?()
             }
         }
     }
@@ -355,15 +394,15 @@ final class StreamingAudioPlayer {
         bufferQueue.sync { [weak self] in
             guard let self = self else { return }
             self.isStopping = true
+            self.isAcceptingAudio = false
             self.playbackGeneration += 1  // Invalidate all pending callbacks
             
             // Stop player node first (this cancels scheduled buffers)
             self.playerNode.stop()
             
             // Stop engine
-            if self.isEngineRunning {
+            if self.audioEngine.isRunning {
                 self.audioEngine.stop()
-                self.isEngineRunning = false
             }
             
             // Clear state
@@ -404,12 +443,14 @@ final class StreamingAudioPlayer {
             self.isPaused = false
             guard self.hasStartedPlayback else { return }
 
-            if !self.isEngineRunning {
+            // Ask the engine itself: it may have stopped on its own (device change), and
+            // starting the player on a stopped engine raises an exception.
+            if !self.audioEngine.isRunning {
                 do {
                     try self.audioEngine.start()
-                    self.isEngineRunning = true
                 } catch {
                     print("[Hibiki] ❌ Failed to resume audio engine: \(error)")
+                    return
                 }
             }
 
@@ -418,10 +459,12 @@ final class StreamingAudioPlayer {
         }
     }
 
+    /// Prepare for a new playback session. Audio is only accepted after this.
     func reset() {
         stop()
         bufferQueue.sync { [weak self] in
             self?.setupAudioEngine()
+            self?.isAcceptingAudio = true
         }
     }
 }

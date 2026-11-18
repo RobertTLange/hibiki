@@ -41,10 +41,13 @@ public struct PocketRuntimeHealth {
 public enum PocketRuntimeError: LocalizedError {
     case uvMissing
     case invalidHost(String)
+    case unsafeVenvPath(String)
     case installFailed(step: String, output: String)
     case runtimeNotInstalled
     case startupFailed(message: String)
     case startTimedOut
+    /// A newer start or stop request took over while this start was in progress.
+    case superseded
     case healthCheckFailed
 
     public var errorDescription: String? {
@@ -53,6 +56,9 @@ public enum PocketRuntimeError: LocalizedError {
             return "uv was not found. Install uv and retry Pocket TTS setup."
         case .invalidHost(let host):
             return "Managed Pocket runtime only supports localhost. Invalid host: \(host)"
+        case .unsafeVenvPath(let path):
+            return "Refusing to replace \(path): it exists and is not a Python virtualenv. "
+                + "Choose a new or empty directory for the managed venv path."
         case .installFailed(let step, let output):
             let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
@@ -65,6 +71,8 @@ public enum PocketRuntimeError: LocalizedError {
             return "Pocket TTS failed to start. \(message)"
         case .startTimedOut:
             return "Pocket TTS server did not become healthy in time."
+        case .superseded:
+            return "Pocket TTS start was superseded by a newer start or stop request."
         case .healthCheckFailed:
             return "Pocket TTS health check failed."
         }

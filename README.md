@@ -76,11 +76,13 @@ Remove them later with `launchctl unsetenv <NAME>`.
 
 1. Open **Settings → Configuration → Local Pocket TTS (Managed)**.
 2. Enable managed runtime.
-3. Click **Install / Reinstall** (uses `uv` to create a local venv and install `pocket-tts`).
+3. Click **Install / Reinstall** (uses `uv` to create a local venv and install the pinned `pocket-tts` release, currently 4.0.1).
 4. Click **Start** (or enable auto-start).
 5. Select provider **Pocket TTS (Local)** in the Text to Speech section.
 
 Default managed endpoint: `http://127.0.0.1:8000`
+
+The first start downloads the model weights and can take a minute. An existing managed venv keeps the `pocket-tts` version it has until you click **Install / Reinstall**.
 
 Integration note: Hibiki uses a managed local Pocket TTS runtime (install/start/health checks in-app) and streams Pocket-generated WAV audio directly to the built-in player.
 
@@ -90,7 +92,7 @@ Note: Pocket local mode is currently English-only in Hibiki.
 
 ## CLI Usage
 
-The Hibiki app must be running. Use hotkeys (Option+F, Shift+Option+F) for GUI-based TTS.
+The CLI talks to the Hibiki app and launches it if it is not running. Use hotkeys (Option+F, Shift+Option+F) for GUI-based TTS.
 
 ```bash
 hibiki --text "Hello, world!"                        # Basic TTS
@@ -107,7 +109,8 @@ hibiki --text "Article..." --summarize --translate fr # Full pipeline
 **Input source:** use exactly one of `--text` or `--file-name`.
 **File decoding:** `--file-name` expects UTF-8 text files.
 **Markdown cleanup:** `.md` / `.markdown` files get balanced cleanup (frontmatter/comments removed, headings/lists normalized, links simplified, code fences converted for speech).
-**Input size limit:** request URL payload must stay under ~32KB after encoding; very large files should be summarized or split.
+**Queueing:** requests are spoken one after another; at most 20 can wait, further ones are dropped.
+**Input size limit:** request URL payload must stay under ~32KB after encoding. `--summarize` runs in the app after transport, so it does not lift the limit; shorten or split very large inputs first.
 
 ## Agent Integration
 
@@ -139,11 +142,25 @@ chmod +x ~/.claude/hooks/speak-summary.sh
 
 Then merge `skills/hibiki-tts/hooks.json` into your `~/.claude/settings.json`.
 
+The hook cuts messages that would exceed the CLI's URL transport limit and logs nothing by default. Set `HIBIKI_HOOK_DEBUG=1` to write a debug log to `$TMPDIR/hibiki-speak-summary.log`.
+
 ## Security
 
 - Never commit API keys to this repo.
 - Prefer configuring keys inside Hibiki Settings.
 - For menu bar app launches, prefer `launchctl setenv ...` so Hibiki can read env vars.
+- Keys from the environment take precedence over the Settings fields and are never written to disk. Keys typed into Settings are stored in the app's preferences (`defaults`, plaintext).
+
+## Cost estimates
+
+The Statistics tab shows estimates from list prices, not invoices:
+
+- **OpenAI TTS** (`gpt-4o-mini-tts`): $0.60 per 1M input tokens plus about $0.015 per minute of generated audio (OpenAI bills audio at $12 per 1M audio tokens and does not report the count).
+- **ElevenLabs**: $0.10 per 1,000 characters for Multilingual v2 / v3, $0.05 for Flash / Turbo. Subscription plans may differ.
+- **Pocket TTS**: local, free.
+- **Summarization / translation**: per-model token prices in `Sources/HibikiShared/LLMModel.swift`.
+
+Totals are kept in `usage-ledger.json`, separately from history, so they are not affected by history retention or by clearing history. Entries recorded before these rates were introduced keep the cost stored with them.
 
 ## Troubleshooting
 
@@ -163,27 +180,44 @@ Debug logs available in Settings → Debug tab.
 ```
 Sources/
 ├── HibikiCLI/
-│   └── HibikiCLI.swift          # CLI executable (argument parsing, URL scheme)
+│   └── HibikiCLI.swift              # CLI executable (argument parsing, dispatch to the app)
+├── HibikiCLICore/                   # Shared by CLI and app
+│   ├── CLIRequest.swift             # hibiki://speak URL encode/decode + validation and limits
+│   ├── CLIInputResolver.swift       # --text / --file-name resolution, markdown cleanup
+│   └── DoNotDisturbPolicy.swift     # Do Not Disturb flag shared between CLI and app
+├── HibikiShared/
+│   ├── LLMModel.swift               # LLM models and pricing
+│   └── PlaybackSettings.swift       # Speed/volume clamping
+├── HibikiPocketRuntime/
+│   ├── PocketTTSRuntimeManager.swift    # Managed local Pocket runtime install/start/health
+│   └── PocketTTSRuntimeTypes.swift      # Status, health and error types
 └── Hibiki/
     ├── HibikiApp.swift              # App entry point
     ├── AppDelegate.swift            # Menu bar setup, window management, URL handling
     ├── Core/
-    │   ├── AppState.swift           # Main application state
-    │   ├── AccessibilityManager.swift   # Text selection via accessibility API
-    │   ├── CLIRequestHandler.swift  # Handles CLI requests via URL scheme
-    │   ├── PocketTTSRuntimeManager.swift # Managed local Pocket runtime install/start/health
-    │   ├── PermissionManager.swift      # Permission checking
-    │   ├── DebugLogger.swift        # In-app debug logging
-    │   ├── HistoryManager.swift     # TTS history tracking
-    │   ├── HistoryEntry.swift       # History data model
+    │   ├── AppState.swift           # Main application state, request queue, playback control
+    │   ├── InterleavedPipeline.swift    # Streaming summarize -> translate -> TTS pipeline
+    │   ├── SentenceAccumulator.swift    # Sentence boundaries in streamed LLM output
     │   ├── LLMService.swift         # OpenAI LLM API client (summarization/translation)
     │   ├── TextChunker.swift        # Long text chunking
-    │   └── UsageStatistics.swift    # Usage tracking
+    │   ├── CLIRequestHandler.swift  # Handles CLI requests via URL scheme
+    │   ├── CLIInstaller.swift       # /usr/local/bin/hibiki symlink
+    │   ├── AccessibilityManager.swift   # Text selection via accessibility API
+    │   ├── PasteboardSnapshot.swift     # Clipboard save/restore for the Cmd+C fallback
+    │   ├── PermissionManager.swift      # Permission checking
+    │   ├── DebugLogger.swift        # In-app debug logging
+    │   ├── HistoryManager.swift     # TTS history and retention
+    │   ├── HistoryEntry.swift       # History data model
+    │   ├── TTSPricing.swift         # Per-provider TTS cost estimates
+    │   ├── UsageLedger.swift        # Per-day usage totals, independent of history retention
+    │   └── UsageStatistics.swift    # Usage statistics from the ledger
     ├── Audio/
-    │   ├── TTSService.swift         # OpenAI + ElevenLabs TTS API client
+    │   ├── TTSService.swift         # OpenAI + ElevenLabs + Pocket TTS client
     │   ├── WAVStreamDecoder.swift   # Streaming WAV -> PCM decoder for local Pocket TTS
     │   ├── StreamingAudioPlayer.swift   # PCM audio playback
     │   └── AudioLevelMonitor.swift  # Audio level monitoring for waveform
+    ├── Resources/
+    │   └── Info.plist               # Bundled by build.sh (URL scheme, minimum OS)
     └── Views/
         ├── MainSettingsView.swift   # Tabbed settings window
         ├── MenuBarView.swift        # Menu bar popover
@@ -195,3 +229,15 @@ Sources/
             ├── HistoryTab.swift         # TTS history
             └── StatisticsTab.swift      # Usage statistics
 ```
+
+## Development
+
+```bash
+swift build          # compile
+swift test           # unit + stubbed end-to-end tests (no network, no API keys)
+./build.sh           # assemble and ad-hoc sign .build/Hibiki.app
+```
+
+CI (`.github/workflows/ci.yml`) runs `swift build` and `swift test` on macOS for pushes to `main` and pull requests. The audio-engine tests need an output device; set `HIBIKI_SKIP_AUDIO_TESTS=1` to skip them where there is none.
+
+`./build.sh` resets the Accessibility permission for `com.superlisten.hibiki`, including an installed copy of the app; re-grant it in System Settings afterwards.

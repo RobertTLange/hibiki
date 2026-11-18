@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build and test
+    # Matches the toolchain the package is developed with (Swift 6.2, macOS 26).
+    runs-on: macos-26
+    timeout-minutes: 20
+    env:
+      # Hosted runners have no audio output device; the tests that play through
+      # AVAudioEngine skip themselves when this is set.
+      HIBIKI_SKIP_AUDIO_TESTS: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: swift --version
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test

@@ -35,6 +35,7 @@ final class AppState: ObservableObject {
         Aim for 3–5 sentences and no more than 2 short paragraphs.
         """
     static let maxPlaybackVolume: Double = 3.0
+    static let maxWaitingRequests = 20
     private static let legacySummarizationPrompts: [String] = [
         """
         Summarize the following text concisely while preserving the key information. \
@@ -81,6 +82,9 @@ final class AppState: ObservableObject {
     @Published var activeHistoryReplayEntryId: UUID?
     @Published private(set) var pendingRequestCount: Int = 0
     @Published private(set) var isDoNotDisturbEnabled: Bool = false
+    /// True while the corresponding key is supplied by the environment (process or launchctl).
+    @Published private(set) var openAIKeyFromEnvironment = false
+    @Published private(set) var elevenLabsKeyFromEnvironment = false
 
     @AppStorage("selectedVoice") var selectedVoice: String = TTSVoice.coral.rawValue
     @AppStorage("ttsProvider") var ttsProvider: String = TTSProvider.openAI.rawValue
@@ -169,6 +173,7 @@ final class AppState: ObservableObject {
     private let audioPlayer = StreamingAudioPlayer.shared
     private let accessibilityManager = AccessibilityManager.shared
     let pocketRuntimeManager = PocketTTSRuntimeManager.shared
+    private var pocketStartupTask: Task<Void, Never>?
     private var summarizationTask: Task<Void, Never>?
     private var translationTask: Task<Void, Never>?
     private let interleavedPipeline = InterleavedPipeline()
@@ -182,6 +187,7 @@ final class AppState: ObservableObject {
     private var pendingHistorySave: (
         text: String,
         voice: String,
+        billing: TTSBilling,
         inputTokens: Int,
         summarizedText: String?,
         llmInputTokens: Int?,
@@ -194,6 +200,10 @@ final class AppState: ObservableObject {
         targetLanguage: String?
     )?
     private var historySaved = false
+    /// Audio of the entry being replayed, kept so seeking does not re-read it from disk.
+    private var historyReplayAudio: (entryID: UUID, data: Data)?
+    /// Share of the replayed entry that precedes the audio loaded in the player (after a seek).
+    private var historyReplayStartFraction: Double = 0
     private enum RequestSource: String {
         case cli
         case manual
@@ -219,6 +229,11 @@ final class AppState: ObservableObject {
     }
     private var requestQueue: [QueuedRequest] = []
     private var activeRequest: QueuedRequest?
+    /// Runs the active request up to the point where playback starts; cancelled on stop so
+    /// in-flight LLM calls and Pocket startup do not resurface as speech afterwards.
+    private var activeRequestTask: Task<Void, Never>?
+    /// TTS tokens already sent for the active request (for pricing a request stopped early).
+    private var activeTTSTokenEstimate: (@MainActor () -> Int)?
     private enum EnvironmentLookupSource: String {
         case processInfo = "process environment"
         case launchctl = "launchctl getenv"
@@ -287,9 +302,15 @@ final class AppState: ObservableObject {
             source: request.source.logSource
         )
 
-        Task { @MainActor in
+        activeRequestTask = Task { @MainActor in
             await self.startQueuedRequest(request)
         }
+    }
+
+    /// False once the request was stopped or replaced while one of its awaits was pending.
+    @MainActor
+    private func isStillActive(_ requestID: UUID) -> Bool {
+        activeRequest?.id == requestID && !Task.isCancelled
     }
 
     @MainActor
@@ -352,22 +373,23 @@ final class AppState: ObservableObject {
         DoNotDisturbPolicy.setEnabled(false)
 
         migrateSummarizationPromptIfNeeded()
-        migrateLLMModelDefaultsIfNeeded()
         if elevenLabsVoiceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             elevenLabsVoiceID = "JBFqnCBsd6RMkjVDRZzb"
         }
         if ElevenLabsModel(rawValue: elevenLabsModelID) == nil {
             elevenLabsModelID = TTSConfiguration.defaultElevenLabsModelID
         }
-        if let (envKey, source) = resolvedEnvironmentValue(for: "OPENAI_API_KEY", logSource: "AppState"),
-           apiKey != envKey {
-            apiKey = envKey
-            logger.info("Loaded OpenAI API key from OPENAI_API_KEY via \(source.rawValue)", source: "AppState")
+        // Keys from the environment are read when a request needs them and are never written
+        // to UserDefaults. A key already stored there is left alone: it cannot be told apart
+        // from one typed into Settings, and removing it would leave the app without a key
+        // the next time it is launched without that environment (e.g. from Finder).
+        if let (_, source) = resolvedEnvironmentValue(for: "OPENAI_API_KEY", logSource: "AppState") {
+            openAIKeyFromEnvironment = true
+            logger.info("Using OpenAI API key from OPENAI_API_KEY via \(source.rawValue)", source: "AppState")
         }
-        if let (envKey, source) = resolvedEnvironmentValue(for: "ELEVENLABS_API_KEY", logSource: "AppState"),
-           elevenLabsAPIKey != envKey {
-            elevenLabsAPIKey = envKey
-            logger.info("Loaded ElevenLabs API key from ELEVENLABS_API_KEY via \(source.rawValue)", source: "AppState")
+        if let (_, source) = resolvedEnvironmentValue(for: "ELEVENLABS_API_KEY", logSource: "AppState") {
+            elevenLabsKeyFromEnvironment = true
+            logger.info("Using ElevenLabs API key from ELEVENLABS_API_KEY via \(source.rawValue)", source: "AppState")
         }
         if pocketBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            let (envBaseURL, source) = resolvedEnvironmentValue(for: "POCKET_TTS_BASE_URL", logSource: "AppState") {
@@ -409,15 +431,6 @@ final class AppState: ObservableObject {
             summarizationPrompt = Self.defaultSummarizationPrompt
             logger.info("Updated legacy summarization prompt to latest default", source: "AppState")
         }
-    }
-
-    private func migrateLLMModelDefaultsIfNeeded() {
-        let defaults = UserDefaults.standard
-        guard !defaults.bool(forKey: LLMModelMigration.completedDefaultsKey) else { return }
-        summarizationModel = LLMModelMigration.migratedValue(for: summarizationModel)
-        translationModelSetting = LLMModelMigration.migratedValue(for: translationModelSetting)
-        defaults.set(true, forKey: LLMModelMigration.completedDefaultsKey)
-        logger.info("Migrated legacy LLM model defaults to \(LLMModel.defaultModel.rawValue)", source: "AppState")
     }
 
     private func activeTTSProvider() -> TTSProvider {
@@ -489,11 +502,12 @@ final class AppState: ObservableObject {
     }
 
     private func resolveOpenAIAPIKey(logSource: String) -> String? {
-        if let (envKey, source) = resolvedEnvironmentValue(for: "OPENAI_API_KEY", logSource: logSource) {
-            if apiKey != envKey {
-                apiKey = envKey
-                logger.info("Loaded OpenAI API key from OPENAI_API_KEY via \(source.rawValue)", source: logSource)
-            }
+        // The environment wins over the Settings field and is not persisted.
+        let envKey = resolvedEnvironmentValue(for: "OPENAI_API_KEY", logSource: logSource)?.0
+        if openAIKeyFromEnvironment != (envKey != nil) {
+            openAIKeyFromEnvironment = envKey != nil
+        }
+        if let envKey {
             return envKey
         }
 
@@ -505,11 +519,11 @@ final class AppState: ObservableObject {
     }
 
     private func resolveElevenLabsAPIKey(logSource: String) -> String? {
-        if let (envKey, source) = resolvedEnvironmentValue(for: "ELEVENLABS_API_KEY", logSource: logSource) {
-            if elevenLabsAPIKey != envKey {
-                elevenLabsAPIKey = envKey
-                logger.info("Loaded ElevenLabs API key from ELEVENLABS_API_KEY via \(source.rawValue)", source: logSource)
-            }
+        let envKey = resolvedEnvironmentValue(for: "ELEVENLABS_API_KEY", logSource: logSource)?.0
+        if elevenLabsKeyFromEnvironment != (envKey != nil) {
+            elevenLabsKeyFromEnvironment = envKey != nil
+        }
+        if let envKey {
             return envKey
         }
 
@@ -655,7 +669,6 @@ final class AppState: ObservableObject {
             try await pocketRuntimeManager.restartServer(
                 host: pocketManagedHost,
                 port: pocketManagedPort,
-                voice: effectivePocketVoice(),
                 venvPath: pocketManagedVenvPath,
                 autoRestart: pocketManagedAutoStart
             )
@@ -708,11 +721,37 @@ final class AppState: ObservableObject {
         processNextRequestIfPossible()
     }
 
+    /// Starts the managed runtime at most once at a time: launch auto-start and the first
+    /// request can arrive together, and a second start would kill the first's server.
     @MainActor
     private func ensurePocketRuntimeStarted(logSource: String) async {
         guard pocketManagedEnabled else { return }
 
+        if let inFlight = pocketStartupTask {
+            await inFlight.value
+            return
+        }
+
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performPocketRuntimeStartup(logSource: logSource)
+        }
+        pocketStartupTask = task
+        await task.value
+        pocketStartupTask = nil
+    }
+
+    @MainActor
+    private func performPocketRuntimeStartup(logSource: String) async {
         do {
+            // Checked before the health probe below: selected text must not be sent to a
+            // "managed" endpoint on another machine just because it answers like Pocket.
+            // (A local process that answers like Pocket on this port is still adopted, e.g.
+            // a server left over from a previous run.)
+            guard PocketTTSRuntimeManager.isLoopbackHost(pocketManagedHost) else {
+                throw PocketRuntimeError.invalidHost(pocketManagedHost)
+            }
+
             try await pocketRuntimeManager.installIfNeeded(venvPath: pocketManagedVenvPath)
 
             let portsToTry = candidateManagedPocketPorts(startingAt: pocketManagedPort)
@@ -741,7 +780,6 @@ final class AppState: ObservableObject {
                     try await pocketRuntimeManager.startServer(
                         host: pocketManagedHost,
                         port: port,
-                        voice: effectivePocketVoice(),
                         venvPath: pocketManagedVenvPath,
                         autoRestart: pocketManagedAutoStart
                     )
@@ -754,7 +792,15 @@ final class AppState: ObservableObject {
                         started = true
                         break
                     }
+                } catch PocketRuntimeError.startTimedOut {
+                    // The server is running but slow (first start downloads the model).
+                    // Another port would only repeat the wait.
+                    throw PocketRuntimeError.startTimedOut
+                } catch PocketRuntimeError.superseded {
+                    // The user stopped or restarted the runtime; do not start another one.
+                    throw PocketRuntimeError.superseded
                 } catch {
+                    // The server could not come up on this port; try the next one.
                     lastStartupError = error
                 }
             }
@@ -786,12 +832,31 @@ final class AppState: ObservableObject {
         return ports
     }
 
-    private func pocketLanguageIsAllowed(_ text: String) -> Bool {
-        guard activeTTSProvider() == .pocketLocal else {
+    /// Whether to abandon the manually configured Pocket endpoint for the managed runtime.
+    /// Only when something else answers at that address: the setting is persisted, so an
+    /// endpoint that is merely down or slow must not flip it (that request just fails).
+    static func shouldSwitchToManagedPocketRuntime(
+        manualHealth: PocketRuntimeHealth,
+        managedRuntimeInstalled: Bool
+    ) -> Bool {
+        let answered = manualHealth.statusCode != nil
+        return managedRuntimeInstalled && answered && !manualHealth.isHealthy && !manualHealth.isPocketAPI
+    }
+
+    /// Pocket's local model only speaks English. What matters is the language of the text
+    /// that will be spoken: the translation target if there is one, otherwise the source
+    /// (a summary stays in the source language).
+    static func pocketCanSpeak(sourceText: String, translatingTo targetLanguage: TargetLanguage) -> Bool {
+        switch targetLanguage {
+        case .english:
             return true
+        case .french, .german, .japanese, .spanish:
+            return false
+        case .none:
+            break
         }
 
-        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
         if normalized.isEmpty {
             return true
         }
@@ -1025,7 +1090,58 @@ final class AppState: ObservableObject {
             return
         }
 
-        if isPlaying || isSummarizing || isTranslating || isLoading {
+        startHistoryReplay(entry)
+    }
+
+    /// History tab: clicking the entry that is playing stops it, anything else starts it.
+    @MainActor
+    func toggleHistoryReplay(for entry: HistoryEntry) {
+        if activeHistoryReplayEntryId == entry.id {
+            stopHistoryReplay()
+            return
+        }
+        startHistoryReplay(entry)
+    }
+
+    /// Stop a replay and nothing else. Unlike `stopPlayback()` this keeps requests that
+    /// queued up behind the replay (CLI, hooks) and lets the next one start.
+    @MainActor
+    func stopHistoryReplay() {
+        guard endHistoryReplay() else { return }
+        markRequestFinished()
+    }
+
+    /// - Returns: false if no replay was playing.
+    @MainActor
+    private func endHistoryReplay() -> Bool {
+        guard activeHistoryReplayEntryId != nil else { return false }
+        logger.info("Stopping history replay", source: "AppState")
+        stopProgressTracking()
+        audioPlayer.stop()
+        audioLevelMonitor.stopMonitoring()
+        isPlaying = false
+        clearHistoryReplayState()
+        currentText = nil
+        displayText = ""
+        return true
+    }
+
+    /// Jump within the entry currently being replayed (`progress` is 0...1 of the whole entry).
+    @MainActor
+    func seekHistoryReplay(for entry: HistoryEntry, to progress: Double) {
+        guard isPlaying,
+              activeHistoryReplayEntryId == entry.id,
+              let cached = historyReplayAudio,
+              cached.entryID == entry.id else { return }
+        playHistoryEntry(entry, audioData: cached.data, startFraction: progress)
+    }
+
+    @MainActor
+    private func startHistoryReplay(_ entry: HistoryEntry) {
+        // Switching from one replay to another keeps queued requests; interrupting live
+        // speech stops it the usual way.
+        let wasReplaying = endHistoryReplay()
+        if !wasReplaying, isPlaying || isSummarizing || isTranslating || isLoading {
             stopPlayback()
         }
 
@@ -1034,7 +1150,7 @@ final class AppState: ObservableObject {
             return
         }
 
-        playHistoryEntry(entry, audioData: audioData)
+        playHistoryEntry(entry, audioData: audioData, startFraction: 0)
     }
 
     /// Play/pause the most recent transcribed audio track from history
@@ -1056,8 +1172,14 @@ final class AppState: ObservableObject {
     }
 
     @MainActor
-    private func playHistoryEntry(_ entry: HistoryEntry, audioData: Data) {
+    private func playHistoryEntry(_ entry: HistoryEntry, audioData: Data, startFraction: Double) {
         logger.info("Replaying history entry: \(entry.id)", source: "AppState")
+
+        // 16-bit mono PCM: keep the start on a frame boundary.
+        let clampedFraction = min(1.0, max(0.0, startFraction))
+        let startOffset = (Int(Double(audioData.count) * clampedFraction) / 2) * 2
+        historyReplayAudio = (entry.id, audioData)
+        historyReplayStartFraction = Double(startOffset) / Double(max(1, audioData.count))
 
         errorMessage = nil
         isLoading = false
@@ -1071,9 +1193,6 @@ final class AppState: ObservableObject {
         displayText = entry.displayText
         streamingSummary = ""
         streamingTranslation = ""
-        playbackProgress = 0.0
-        highlightCharacterIndex = 0
-        lastHighlightIndex = 0
 
         resetAccumulatedAudioData()
         pendingHistorySave = nil
@@ -1085,13 +1204,14 @@ final class AppState: ObservableObject {
         audioPlayer.setEstimatedDuration(forTextLength: max(1, entry.displayText.count))
         audioPlayer.onPlaybackComplete = { [weak self] in
             self?.logger.info("History replay complete", source: "AppState")
-            Task { @MainActor in
+            // Delivered on the main queue; no extra hop, so a stop cannot slip in between.
+            MainActor.assumeIsolated {
                 self?.handlePlaybackComplete()
             }
         }
 
         let chunkSize = 8192
-        var offset = 0
+        var offset = startOffset
         while offset < audioData.count {
             let end = min(offset + chunkSize, audioData.count)
             audioPlayer.enqueue(pcmData: Data(audioData[offset..<end]))
@@ -1101,6 +1221,16 @@ final class AppState: ObservableObject {
 
         audioLevelMonitor.startMonitoring(engine: audioPlayer.audioEngine)
         startProgressTracking()
+        playbackProgress = historyReplayStartFraction
+        highlightCharacterIndex = Int(Double(displayText.count) * historyReplayStartFraction)
+        lastHighlightIndex = highlightCharacterIndex
+    }
+
+    @MainActor
+    private func clearHistoryReplayState() {
+        activeHistoryReplayEntryId = nil
+        historyReplayAudio = nil
+        historyReplayStartFraction = 0
     }
 
     /// Start tracking playback progress for text highlighting
@@ -1127,7 +1257,11 @@ final class AppState: ObservableObject {
     private func updatePlaybackProgress() {
         guard isPlaying, !displayText.isEmpty else { return }
 
-        let rawProgress = audioPlayer.currentPlaybackProgress
+        // A replay that was seeked only has the tail of the entry loaded in the player.
+        let playerProgress = audioPlayer.currentPlaybackProgress
+        let rawProgress = activeHistoryReplayEntryId == nil
+            ? playerProgress
+            : historyReplayStartFraction + (1 - historyReplayStartFraction) * playerProgress
         playbackProgress = rawProgress
         if isPaused {
             return
@@ -1162,31 +1296,39 @@ final class AppState: ObservableObject {
     func stopPlayback() {
         logger.info("Stopping playback", source: "AppState")
 
+        // The provider bills for text already sent, so read the estimate before the
+        // services reset their counters.
+        let ttsTokensSoFar = activeTTSTokenEstimate?() ?? 0
+        activeTTSTokenEstimate = nil
+
         // Cancel ongoing summarization and translation tasks
         summarizationTask?.cancel()
         summarizationTask = nil
         translationTask?.cancel()
         translationTask = nil
-        llmService.cancel()
+        activeRequestTask?.cancel()
+        activeRequestTask = nil
         interleavedPipeline.cancel()
 
         // Stop progress tracking
         stopProgressTracking()
 
-        // Stop audio and TTS
-        audioPlayer.stop()
+        // Stop TTS before audio so no chunk can slip in after the player has stopped
         ttsService.cancel()
+        audioPlayer.stop()
         audioLevelMonitor.stopMonitoring()
 
         // Save to history if we have accumulated audio and haven't saved yet
         let audioSnapshot = takeAccumulatedAudioSnapshot()
 
-        if !historySaved, let pending = pendingHistorySave, !audioSnapshot.isEmpty {
+        if !historySaved, var pending = pendingHistorySave, !audioSnapshot.isEmpty {
+            pending.inputTokens = max(pending.inputTokens, ttsTokensSoFar)
             logger.info("Saving partial audio to history (\(audioSnapshot.count) bytes)", source: "AppState")
             HistoryManager.shared.addEntry(
                 text: pending.text,
                 voice: pending.voice,
                 inputTokens: pending.inputTokens,
+                ttsBilling: pending.billing,
                 audioData: audioSnapshot,
                 summarizedText: pending.summarizedText,
                 llmInputTokens: pending.llmInputTokens,
@@ -1203,9 +1345,10 @@ final class AppState: ObservableObject {
 
         // Clear state
         isPlaying = false
+        isLoading = false
         isSummarizing = false
         isTranslating = false
-        activeHistoryReplayEntryId = nil
+        clearHistoryReplayState()
         currentText = nil
         streamingSummary = ""
         streamingTranslation = ""
@@ -1230,6 +1373,7 @@ final class AppState: ObservableObject {
                 text: pending.text,
                 voice: pending.voice,
                 inputTokens: pending.inputTokens,
+                ttsBilling: pending.billing,
                 audioData: audioSnapshot,
                 summarizedText: pending.summarizedText,
                 llmInputTokens: pending.llmInputTokens,
@@ -1247,14 +1391,35 @@ final class AppState: ObservableObject {
         // Stop progress tracking and monitoring
         stopProgressTracking()
         audioLevelMonitor.stopMonitoring()
+        // Release the output device; a running engine keeps it (and Bluetooth links) open.
+        audioPlayer.stop()
+        activeTTSTokenEstimate = nil
         isPlaying = false
-        activeHistoryReplayEntryId = nil
+        clearHistoryReplayState()
         currentText = nil
         streamingSummary = ""
         streamingTranslation = ""
         displayText = ""
         resetAccumulatedAudioData()
         pendingHistorySave = nil
+        markRequestFinished()
+    }
+
+    /// Common exit for a request that failed after it started.
+    @MainActor
+    private func finishFailedRequest(_ error: Error, logSource: String) {
+        logger.error("Request failed: \(error.localizedDescription)", source: logSource)
+        errorMessage = error.localizedDescription
+        isLoading = false
+        isPlaying = false
+        isSummarizing = false
+        isTranslating = false
+        stopProgressTracking()
+        audioLevelMonitor.stopMonitoring()
+        // Drop audio that was already buffered; with the UI idle it could not be stopped.
+        ttsService.cancel()
+        audioPlayer.stop()
+        activeTTSTokenEstimate = nil
         markRequestFinished()
     }
 
@@ -1274,6 +1439,13 @@ final class AppState: ObservableObject {
         summarizationPromptOverride: String?
     ) async {
         guard shouldAllowRequest(.cli) else { return }
+
+        // Requests are spoken one after another; an unbounded backlog (a looping script, a
+        // hostile page firing links) would keep talking and spending for a long time.
+        guard requestQueue.count < Self.maxWaitingRequests else {
+            logger.warning("Dropping CLI request: \(requestQueue.count) requests already waiting", source: "CLI")
+            return
+        }
 
         enqueueRequest(
             source: .cli,
@@ -1328,10 +1500,13 @@ final class AppState: ObservableObject {
             }()
 
             let manualHealth = await pocketRuntimeManager.healthCheck(baseURL: configuredBaseURL)
+            guard isStillActive(request.id) else { return }
             if manualHealth.isHealthy {
                 pocketBaseURL = configuredBaseURL
-            } else if !manualHealth.isPocketAPI,
-                      pocketRuntimeManager.hasInstalledRuntime(venvPath: pocketManagedVenvPath) {
+            } else if Self.shouldSwitchToManagedPocketRuntime(
+                manualHealth: manualHealth,
+                managedRuntimeInstalled: pocketRuntimeManager.hasInstalledRuntime(venvPath: pocketManagedVenvPath)
+            ) {
                 logger.warning(
                     "Configured Pocket endpoint is not Pocket API (\(configuredBaseURL)); switching to managed runtime.",
                     source: logSource
@@ -1355,6 +1530,7 @@ final class AppState: ObservableObject {
 
         if provider == .pocketLocal, pocketManagedEnabled {
             await ensurePocketRuntimeStarted(logSource: logSource)
+            guard isStillActive(request.id) else { return }
             if !pocketManagedLastError.isEmpty {
                 markRequestFinished()
                 return
@@ -1372,7 +1548,7 @@ final class AppState: ObservableObject {
             ttsConfiguration = resolved
         }
 
-        if provider == .pocketLocal, !pocketLanguageIsAllowed(text) {
+        if provider == .pocketLocal, !Self.pocketCanSpeak(sourceText: text, translatingTo: language) {
             logger.error("Pocket TTS only supports English text right now", source: logSource)
             errorMessage = "Pocket TTS local runtime currently supports English text only."
             markRequestFinished()
@@ -1429,6 +1605,7 @@ final class AppState: ObservableObject {
             }
             // Translate + TTS
             await processTranslateTTS(
+                requestID: request.id,
                 text: text,
                 openAIAPIKey: openAIAPIKey,
                 ttsConfiguration: ttsConfiguration,
@@ -1474,6 +1651,7 @@ final class AppState: ObservableObject {
         pendingHistorySave = (
             text: text,
             voice: ttsConfiguration.historyVoiceLabel,
+            billing: TTSPricing.billing(for: ttsConfiguration),
             inputTokens: 0,
             summarizedText: nil,
             llmInputTokens: nil,
@@ -1489,7 +1667,8 @@ final class AppState: ObservableObject {
         // Set up playback completion callback
         audioPlayer.onPlaybackComplete = { [weak self] in
             self?.logger.info("Audio playback complete", source: logSource)
-            Task { @MainActor in
+            // Delivered on the main queue; no extra hop, so a stop cannot slip in between.
+            MainActor.assumeIsolated {
                 self?.handlePlaybackComplete()
             }
         }
@@ -1499,6 +1678,7 @@ final class AppState: ObservableObject {
         isLoading = false
         audioLevelMonitor.startMonitoring(engine: audioPlayer.audioEngine)
         startProgressTracking()
+        activeTTSTokenEstimate = { [ttsService] in ttsService.estimatedInputTokensSoFar }
 
         // Start streaming TTS
         ttsService.streamSpeech(
@@ -1520,14 +1700,8 @@ final class AppState: ObservableObject {
                 self?.audioPlayer.markStreamComplete()
             },
             onError: { [weak self] error in
-                self?.logger.error("TTS error: \(error.localizedDescription)", source: logSource)
                 Task { @MainActor in
-                    self?.errorMessage = error.localizedDescription
-                    self?.isLoading = false
-                    self?.isPlaying = false
-                    self?.stopProgressTracking()
-                    self?.audioLevelMonitor.stopMonitoring()
-                    self?.markRequestFinished()
+                    self?.finishFailedRequest(error, logSource: logSource)
                 }
             }
         )
@@ -1582,16 +1756,19 @@ final class AppState: ObservableObject {
             self?.logger.debug("Pipeline progress: \(status)", source: logSource)
         }
 
-        interleavedPipeline.onComplete = { [weak self] result in
+        interleavedPipeline.onTextComplete = { [weak self] result in
             guard let self = self else { return }
-            self.logger.info("Summarize pipeline complete", source: logSource)
+            self.logger.info("Summarize pipeline text complete", source: logSource)
 
             self.displayText = result.summarizedText
             self.currentText = result.summarizedText
+            // The estimate so far was a guess from the source length; the spoken text is known now.
+            self.audioPlayer.setEstimatedDuration(forTextLength: result.summarizedText.count)
 
             self.pendingHistorySave = (
                 text: text,
                 voice: ttsConfiguration.historyVoiceLabel,
+                billing: TTSPricing.billing(for: ttsConfiguration),
                 inputTokens: result.ttsInputTokens,
                 summarizedText: result.summarizedText,
                 llmInputTokens: result.summarizationInputTokens,
@@ -1605,24 +1782,20 @@ final class AppState: ObservableObject {
             )
 
             self.isSummarizing = false
-            self.audioPlayer.markStreamComplete()
+        }
+
+        interleavedPipeline.onComplete = { [weak self] result in
+            self?.finishPipelineAudio(result, logSource: logSource)
         }
 
         interleavedPipeline.onError = { [weak self] error in
-            guard let self = self else { return }
-            self.logger.error("Pipeline error: \(error.localizedDescription)", source: logSource)
-            self.errorMessage = error.localizedDescription
-            self.isLoading = false
-            self.isPlaying = false
-            self.isSummarizing = false
-            self.stopProgressTracking()
-            self.audioLevelMonitor.stopMonitoring()
-            self.markRequestFinished()
+            self?.finishFailedRequest(error, logSource: logSource)
         }
 
         audioPlayer.onPlaybackComplete = { [weak self] in
             self?.logger.info("Audio playback complete", source: logSource)
-            Task { @MainActor in
+            // Delivered on the main queue; no extra hop, so a stop cannot slip in between.
+            MainActor.assumeIsolated {
                 self?.handlePlaybackComplete()
             }
         }
@@ -1642,12 +1815,26 @@ final class AppState: ObservableObject {
             ttsConfiguration: ttsConfiguration
         )
 
+        activeTTSTokenEstimate = { [interleavedPipeline] in interleavedPipeline.ttsInputTokensSoFar }
         interleavedPipeline.start(text: text, config: config)
+    }
+
+    /// Every pipeline sentence has been synthesized: record final TTS usage and let the
+    /// player report completion once its buffers have drained.
+    @MainActor
+    private func finishPipelineAudio(_ result: InterleavedPipelineResult, logSource: String) {
+        logger.info("Pipeline audio complete, ttsTokens: \(result.ttsInputTokens)", source: logSource)
+        if var pending = pendingHistorySave {
+            pending.inputTokens = result.ttsInputTokens
+            pendingHistorySave = pending
+        }
+        audioPlayer.markStreamComplete()
     }
 
     /// Translate + TTS from queued request (no summarization)
     @MainActor
     private func processTranslateTTS(
+        requestID: UUID,
         text: String,
         openAIAPIKey: String,
         ttsConfiguration: TTSConfiguration,
@@ -1673,38 +1860,51 @@ final class AppState: ObservableObject {
 
         let translationModel = LLMModel(rawValue: translationModelSetting) ?? .defaultModel
 
-        // For translate-only, we use LLMService directly
+        // For translate-only, we use LLMService directly. The streaming call has the full
+        // output budget and reports token usage.
         do {
-            let translatedText = try await llmService.translateSentence(
-                sentence: text,
-                context: nil,
+            let translation = try await llmService.translateStreaming(
+                text: text,
                 targetLanguage: language,
                 model: translationModel,
                 systemPrompt: translationPrompt(for: language),
-                apiKey: openAIAPIKey
+                apiKey: openAIAPIKey,
+                onChunk: { [weak self] chunk in
+                    guard let self, self.activeRequest?.id == requestID else { return }
+                    self.streamingTranslation += chunk
+                    self.displayText = self.streamingTranslation
+                }
             )
 
+            // Stopped (or replaced) while translating: do not start speaking now.
+            guard isStillActive(requestID) else { return }
+
+            let translatedText = translation.translatedText
             displayText = translatedText
             currentText = translatedText
 
             pendingHistorySave = (
                 text: text,
                 voice: ttsConfiguration.historyVoiceLabel,
+                billing: TTSPricing.billing(for: ttsConfiguration),
                 inputTokens: 0,
                 summarizedText: nil,
                 llmInputTokens: nil,
                 llmOutputTokens: nil,
                 llmModel: nil,
                 translatedText: translatedText,
-                translationInputTokens: nil,
-                translationOutputTokens: nil,
+                translationInputTokens: translation.inputTokens > 0
+                    ? translation.inputTokens : max(1, text.count / 4),
+                translationOutputTokens: translation.outputTokens > 0
+                    ? translation.outputTokens : max(1, translatedText.count / 4),
                 translationModel: translationModel.rawValue,
                 targetLanguage: language.rawValue
             )
 
             audioPlayer.onPlaybackComplete = { [weak self] in
                 self?.logger.info("Audio playback complete", source: logSource)
-                Task { @MainActor in
+                // Delivered on the main queue; no extra hop, so a stop cannot slip in between.
+                MainActor.assumeIsolated {
                     self?.handlePlaybackComplete()
                 }
             }
@@ -1714,6 +1914,7 @@ final class AppState: ObservableObject {
             isTranslating = false
             audioLevelMonitor.startMonitoring(engine: audioPlayer.audioEngine)
             startProgressTracking()
+            activeTTSTokenEstimate = { [ttsService] in ttsService.estimatedInputTokensSoFar }
 
             // Stream TTS for translated text
             ttsService.streamSpeech(
@@ -1735,24 +1936,15 @@ final class AppState: ObservableObject {
                     self?.audioPlayer.markStreamComplete()
                 },
                 onError: { [weak self] error in
-                    self?.logger.error("TTS error: \(error.localizedDescription)", source: logSource)
                     Task { @MainActor in
-                        self?.errorMessage = error.localizedDescription
-                        self?.isLoading = false
-                        self?.isPlaying = false
-                        self?.isTranslating = false
-                        self?.stopProgressTracking()
-                        self?.audioLevelMonitor.stopMonitoring()
-                        self?.markRequestFinished()
+                        self?.finishFailedRequest(error, logSource: logSource)
                     }
                 }
             )
         } catch {
-            logger.error("Translation error: \(error.localizedDescription)", source: logSource)
-            errorMessage = error.localizedDescription
-            isLoading = false
-            isTranslating = false
-            markRequestFinished()
+            // A stop already reset the state; a cancelled request is not an error to show.
+            guard isStillActive(requestID) else { return }
+            finishFailedRequest(error, logSource: logSource)
         }
     }
 
@@ -1808,17 +2000,19 @@ final class AppState: ObservableObject {
             self?.logger.debug("Pipeline progress: \(status)", source: logSource)
         }
 
-        interleavedPipeline.onComplete = { [weak self] result in
+        interleavedPipeline.onTextComplete = { [weak self] result in
             guard let self = self else { return }
-            self.logger.info("Interleaved pipeline complete", source: logSource)
+            self.logger.info("Interleaved pipeline text complete", source: logSource)
 
             let finalText = result.translatedText ?? result.summarizedText
             self.displayText = finalText
             self.currentText = finalText
+            self.audioPlayer.setEstimatedDuration(forTextLength: finalText.count)
 
             self.pendingHistorySave = (
                 text: text,
                 voice: ttsConfiguration.historyVoiceLabel,
+                billing: TTSPricing.billing(for: ttsConfiguration),
                 inputTokens: result.ttsInputTokens,
                 summarizedText: result.summarizedText,
                 llmInputTokens: result.summarizationInputTokens,
@@ -1833,25 +2027,20 @@ final class AppState: ObservableObject {
 
             self.isSummarizing = false
             self.isTranslating = false
-            self.audioPlayer.markStreamComplete()
+        }
+
+        interleavedPipeline.onComplete = { [weak self] result in
+            self?.finishPipelineAudio(result, logSource: logSource)
         }
 
         interleavedPipeline.onError = { [weak self] error in
-            guard let self = self else { return }
-            self.logger.error("Pipeline error: \(error.localizedDescription)", source: logSource)
-            self.errorMessage = error.localizedDescription
-            self.isLoading = false
-            self.isPlaying = false
-            self.isSummarizing = false
-            self.isTranslating = false
-            self.stopProgressTracking()
-            self.audioLevelMonitor.stopMonitoring()
-            self.markRequestFinished()
+            self?.finishFailedRequest(error, logSource: logSource)
         }
 
         audioPlayer.onPlaybackComplete = { [weak self] in
             self?.logger.info("Audio playback complete", source: logSource)
-            Task { @MainActor in
+            // Delivered on the main queue; no extra hop, so a stop cannot slip in between.
+            MainActor.assumeIsolated {
                 self?.handlePlaybackComplete()
             }
         }
@@ -1871,6 +2060,7 @@ final class AppState: ObservableObject {
             ttsConfiguration: ttsConfiguration
         )
 
+        activeTTSTokenEstimate = { [interleavedPipeline] in interleavedPipeline.ttsInputTokensSoFar }
         interleavedPipeline.start(text: text, config: config)
     }
 }

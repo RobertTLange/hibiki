@@ -97,51 +97,44 @@ final class AccessibilityManager {
     private func tryClipboardMethod() -> String? {
         let pasteboard = NSPasteboard.general
 
-        // Save current clipboard contents
-        let oldContents = pasteboard.string(forType: .string)
-        let oldChangeCount = pasteboard.changeCount
+        // Keep the user's clipboard, whatever it holds, to put back afterwards. The clipboard
+        // is not cleared up front: the change count tells us whether the copy happened, and
+        // if it did not, there is nothing to restore.
+        let snapshot = PasteboardSnapshot(of: pasteboard)
+        let changeCountBeforeCopy = pasteboard.changeCount
 
-        // Clear clipboard
-        pasteboard.clearContents()
-
-        // Simulate Cmd+C
         logger.debug("Simulating Cmd+C", source: "Accessibility")
         simulateCopy()
 
-        // Wait a bit for the copy to complete
-        Thread.sleep(forTimeInterval: 0.1)
-
-        // Check if clipboard changed
-        let newChangeCount = pasteboard.changeCount
-        let newContents = pasteboard.string(forType: .string)
-
-        logger.debug("Clipboard changed: \(newChangeCount != oldChangeCount), hasContent: \(newContents != nil)", source: "Accessibility")
-
-        // Restore old clipboard if we got new content
-        if let text = newContents, !text.isEmpty, newChangeCount != oldChangeCount {
-            // Restore original clipboard after a delay
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                if let old = oldContents {
-                    pasteboard.clearContents()
-                    pasteboard.setString(old, forType: .string)
-                }
-            }
-
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                logger.info("Got selected text via clipboard: \(text.count) chars", source: "Accessibility")
-                return text
-            }
+        // Wait for the frontmost app to service the copy.
+        let deadline = Date().addingTimeInterval(0.25)
+        while pasteboard.changeCount == changeCountBeforeCopy, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
         }
 
-        // Restore clipboard if copy failed
-        if let old = oldContents {
-            pasteboard.clearContents()
-            pasteboard.setString(old, forType: .string)
+        guard pasteboard.changeCount != changeCountBeforeCopy else {
+            logger.warning("Clipboard method failed: nothing was copied", source: "Accessibility")
+            return nil
         }
 
-        logger.warning("Clipboard method failed", source: "Accessibility")
-        return nil
+        let copiedText = pasteboard.string(forType: .string)
+        let changeCountAfterCopy = pasteboard.changeCount
+
+        // Put the original clipboard back shortly after, unless something else has been
+        // copied in the meantime.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            guard pasteboard.changeCount == changeCountAfterCopy else { return }
+            snapshot.restore(to: pasteboard)
+        }
+
+        guard let text = copiedText,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            logger.warning("Clipboard method failed: copy produced no text", source: "Accessibility")
+            return nil
+        }
+
+        logger.info("Got selected text via clipboard: \(text.count) chars", source: "Accessibility")
+        return text
     }
 
     private func simulateCopy() {

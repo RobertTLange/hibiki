@@ -103,50 +103,8 @@ for bundle in "$BUILD_DIR"/*.bundle; do
     cp -R "$bundle" "$APP_DIR/Contents/Resources/"
 done
 
-# Create Info.plist
-cat > "$APP_DIR/Contents/Info.plist" << 'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleName</key>
-    <string>Hibiki</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.superlisten.hibiki</string>
-    <key>CFBundleVersion</key>
-    <string>1.0.0</string>
-    <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
-    <key>CFBundleExecutable</key>
-    <string>Hibiki</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>NSAccessibilityUsageDescription</key>
-    <string>Hibiki needs accessibility permission to read selected text from other applications.</string>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-    <key>NSPrincipalClass</key>
-    <string>NSApplication</string>
-    <key>CFBundleURLTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleURLName</key>
-            <string>Hibiki CLI</string>
-            <key>CFBundleURLSchemes</key>
-            <array>
-                <string>hibiki</string>
-            </array>
-        </dict>
-    </array>
-</dict>
-</plist>
-EOF
+# Info.plist: the tracked file is the single source (URL scheme, minimum OS, bundle id).
+cp Sources/Hibiki/Resources/Info.plist "$APP_DIR/Contents/Info.plist"
 
 echo "Built Hibiki.app at: $APP_DIR"
 

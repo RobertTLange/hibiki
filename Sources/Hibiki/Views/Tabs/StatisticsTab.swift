@@ -260,7 +260,8 @@ struct StatisticsTab: View {
                     chartsReady = true
                 }
             }
-            // Subscribe to history changes
+            // Subscribe to history changes (once: onAppear runs on every tab switch)
+            cancellables.removeAll()
             HistoryManager.shared.entriesDidChange
                 .receive(on: DispatchQueue.main)
                 .sink { [self] _ in
@@ -274,10 +275,7 @@ struct StatisticsTab: View {
                 // Disable charts while updating data
                 chartsReady = false
 
-                let historyManager = HistoryManager.shared
-                let entriesSnapshot = historyManager.entries
-                let audioDir = historyManager.audioDirectory
-                let calculator = UsageStatisticsCalculator(entries: entriesSnapshot, audioDirectory: audioDir)
+                let calculator = makeCalculator()
                 loadRecentWeekUsage(from: calculator)
 
                 // Re-enable charts after a delay
@@ -298,27 +296,27 @@ struct StatisticsTab: View {
         }
     }
     
+    /// Statistics come from the usage ledger, which outlives history retention.
+    private func makeCalculator() -> UsageStatisticsCalculator {
+        // The ledger is seeded when the history first loads.
+        _ = HistoryManager.shared
+        return UsageStatisticsCalculator(totalsByDay: UsageLedger.shared.snapshot())
+    }
+
     /// Reload statistics when history changes
     private func reloadStatistics() {
         // Don't update chart data while charts are rendering to avoid Charts framework crash
         // The chart will be updated when the tab becomes visible again
         guard !chartsReady else {
             // Just update the summary cards which don't cause crashes
-            let historyManager = HistoryManager.shared
-            let entriesSnapshot = historyManager.entries
-            let audioDir = historyManager.audioDirectory
-            let calculator = UsageStatisticsCalculator(entries: entriesSnapshot, audioDirectory: audioDir)
+            let calculator = makeCalculator()
             self.todaySummary = calculator.calculateTodaySummary()
             self.monthSummary = calculator.calculateThisMonthSummary()
             self.allTimeSummary = calculator.calculateAllTimeSummary()
             return
         }
 
-        let historyManager = HistoryManager.shared
-        let entriesSnapshot = historyManager.entries
-        let audioDir = historyManager.audioDirectory
-
-        let calculator = UsageStatisticsCalculator(entries: entriesSnapshot, audioDirectory: audioDir)
+        let calculator = makeCalculator()
 
         loadRecentWeekUsage(from: calculator)
         self.todaySummary = calculator.calculateTodaySummary()
@@ -464,11 +462,7 @@ struct StatisticsTab: View {
         // Skip if already loaded to prevent repeated calculations on tab switches
         guard isLoading else { return }
         
-        let historyManager = HistoryManager.shared
-        let entriesSnapshot = historyManager.entries
-        let audioDir = historyManager.audioDirectory
-
-        let calculator = UsageStatisticsCalculator(entries: entriesSnapshot, audioDirectory: audioDir)
+        let calculator = makeCalculator()
 
         // These calculations are fast (just iterating over history entries)
         // Running synchronously avoids all the async/threading complexity

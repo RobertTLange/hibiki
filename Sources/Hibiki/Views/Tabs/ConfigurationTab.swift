@@ -183,6 +183,13 @@ struct ConfigurationTab: View {
                                         }
                                     }
 
+                                    if appState.openAIKeyFromEnvironment {
+                                        Text("Using OPENAI_API_KEY from the environment. It takes precedence over this field and is not saved.")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+
                                     Link("Get an API key from OpenAI", destination: URL(string: "https://platform.openai.com/api-keys")!)
                                         .font(.caption)
                                 }
@@ -207,6 +214,13 @@ struct ConfigurationTab: View {
                                         Button(showElevenLabsKey ? "Hide" : "Show") {
                                             showElevenLabsKey.toggle()
                                         }
+                                    }
+
+                                    if appState.elevenLabsKeyFromEnvironment {
+                                        Text("Using ELEVENLABS_API_KEY from the environment. It takes precedence over this field and is not saved.")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                            .fixedSize(horizontal: false, vertical: true)
                                     }
 
                                     Text("Voice ID (override default):")

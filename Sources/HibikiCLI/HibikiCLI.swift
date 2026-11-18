@@ -28,7 +28,9 @@ struct HibikiCLI: ParsableCommand {
             """
     )
 
-    @Option(name: .long, help: "Text to process")
+    // `.unconditional`: spoken text routinely starts with a dash (markdown bullets, flags
+    // being quoted) and must not be mistaken for another option.
+    @Option(name: .long, parsing: .unconditional, help: "Text to process")
     var text: String?
 
     @Option(name: .long, help: "Path to text/markdown/code file to process")
@@ -37,7 +39,7 @@ struct HibikiCLI: ParsableCommand {
     @Flag(name: .long, help: "Summarize the text before speaking")
     var summarize: Bool = false
 
-    @Option(name: .long, help: "Custom summarization prompt (requires --summarize)")
+    @Option(name: .long, parsing: .unconditional, help: "Custom summarization prompt (requires --summarize)")
     var prompt: String?
 
     @Option(name: .long, help: "Target language for translation (en, fr, de, ja, es)")
@@ -69,7 +71,10 @@ struct HibikiCLI: ParsableCommand {
             throw ExitCode.failure
         }
 
-        if DoNotDisturbPolicy.isEnabled() {
+        // The flag is persisted, and the app clears it on launch. If the app is not running
+        // (quit or crashed with DND on) nobody is being disturbed: launch it instead of
+        // silently dropping every request.
+        if DoNotDisturbPolicy.isEnabled(), runningHibikiBundleURL() != nil {
             print(DoNotDisturbPolicy.cliSuppressedNotice)
             return
         }
@@ -93,9 +98,10 @@ struct HibikiCLI: ParsableCommand {
             }
         }
 
-        // Check URL length (practical limit ~32KB)
-        if let urlString = requestURL.absoluteString.data(using: .utf8), urlString.count > 32000 {
-            fputs("Error: Input too long for URL transport (~32KB after encoding). Try --summarize or split the file.\n", stderr)
+        // Check URL length (practical limit ~32KB). Summarization happens in the app, after
+        // transport, so it does not lift this limit.
+        if requestURL.absoluteString.utf8.count > CLIRequest.maxCLIURLBytes {
+            fputs("Error: Input too long for URL transport (~32KB after encoding). Shorten the text or split it into several requests.\n", stderr)
             throw ExitCode(2)
         }
 
