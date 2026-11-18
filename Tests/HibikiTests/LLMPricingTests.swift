@@ -42,4 +42,8 @@ final class LLMPricingTests: XCTestCase {
             XCTAssertEqual(LLMModel(rawValue: model.rawValue), model)
         }
     }
+
+    func testDefaultModelIsGPT6Luna() {
+        XCTAssertEqual(LLMModel.defaultModel, .gpt6Luna)
+    }
 }
