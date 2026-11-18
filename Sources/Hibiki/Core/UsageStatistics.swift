@@ -61,7 +61,7 @@ struct UsageStatisticsCalculator: Sendable {
     private let calendar: Calendar
 
     /// - Parameter totalsByDay: totals keyed by the start of each local day.
-    init(totalsByDay: [Date: DayUsageTotals], calendar: Calendar = .current) {
+    init(totalsByDay: [Date: DayUsageTotals], calendar: Calendar = .autoupdatingCurrent) {
         self.totalsByDay = totalsByDay
         self.calendar = calendar
     }

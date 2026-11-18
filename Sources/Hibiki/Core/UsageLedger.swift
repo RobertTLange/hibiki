@@ -57,7 +57,9 @@ final class UsageLedger {
     private var totalsByDay: [String: DayUsageTotals] = [:]
     private(set) var existsOnDisk: Bool
 
-    init(fileURL: URL, calendar: Calendar = .current) {
+    /// `autoupdatingCurrent`: a menu bar app runs for days, across time zone changes. A
+    /// calendar captured once would keep bucketing by the old zone.
+    init(fileURL: URL, calendar: Calendar = .autoupdatingCurrent) {
         self.fileURL = fileURL
         self.calendar = calendar
         existsOnDisk = FileManager.default.fileExists(atPath: fileURL.path)

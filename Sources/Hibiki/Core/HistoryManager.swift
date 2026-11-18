@@ -137,11 +137,12 @@ final class HistoryManager {
     }
 
     func clearAllHistory() {
-        // Delete all audio files
+        // Delete all audio files, and any set-aside copy of an unreadable history
         let audioURLs = entries.map { audioDirectory.appendingPathComponent($0.audioFileName) }
+        let backupURLs = unreadableHistoryBackups()
         fileIOQueue.async {
-            for audioURL in audioURLs {
-                try? FileManager.default.removeItem(at: audioURL)
+            for url in audioURLs + backupURLs {
+                try? FileManager.default.removeItem(at: url)
             }
         }
 
@@ -233,6 +234,8 @@ final class HistoryManager {
             if decoded.droppedCount > 0 {
                 print("[Hibiki] Skipped \(decoded.droppedCount) unreadable history entries")
                 preserveUnreadableHistoryFile(removingOriginal: false)
+                // Rewrite without the damaged entries, or every launch would take another copy.
+                saveHistory()
             }
         } catch {
             // The next save would overwrite the file with an empty history; keep it instead.
@@ -259,9 +262,23 @@ final class HistoryManager {
         return (entries, decoded.count - entries.count)
     }
 
+    private static let unreadableBackupPrefix = "history.unreadable-"
+
+    /// Backups of history files that could not be (fully) read. They hold spoken text, so
+    /// only the newest is kept and clearing the history removes them too.
+    private func unreadableHistoryBackups() -> [URL] {
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: appSupportDirectory, includingPropertiesForKeys: nil
+        )) ?? []
+        return files.filter { $0.lastPathComponent.hasPrefix(Self.unreadableBackupPrefix) }
+    }
+
     private func preserveUnreadableHistoryFile(removingOriginal: Bool) {
+        for stale in unreadableHistoryBackups() {
+            try? FileManager.default.removeItem(at: stale)
+        }
         let stamp = Int(Date().timeIntervalSince1970)
-        let backup = appSupportDirectory.appendingPathComponent("history.unreadable-\(stamp).json")
+        let backup = appSupportDirectory.appendingPathComponent("\(Self.unreadableBackupPrefix)\(stamp).json")
         do {
             if removingOriginal {
                 try FileManager.default.moveItem(at: historyFile, to: backup)
