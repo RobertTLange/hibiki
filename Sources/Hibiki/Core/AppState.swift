@@ -35,6 +35,7 @@ final class AppState: ObservableObject {
         Aim for 3–5 sentences and no more than 2 short paragraphs.
         """
     static let maxPlaybackVolume: Double = 3.0
+    static let maxWaitingRequests = 20
     private static let legacySummarizationPrompts: [String] = [
         """
         Summarize the following text concisely while preserving the key information. \
@@ -1379,6 +1380,13 @@ final class AppState: ObservableObject {
         summarizationPromptOverride: String?
     ) async {
         guard shouldAllowRequest(.cli) else { return }
+
+        // Requests are spoken one after another; an unbounded backlog (a looping script, a
+        // hostile page firing links) would keep talking and spending for a long time.
+        guard requestQueue.count < Self.maxWaitingRequests else {
+            logger.warning("Dropping CLI request: \(requestQueue.count) requests already waiting", source: "CLI")
+            return
+        }
 
         enqueueRequest(
             source: .cli,

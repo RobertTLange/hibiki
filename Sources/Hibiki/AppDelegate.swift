@@ -568,6 +568,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         removeKeyboardMonitor()
         // The managed Pocket server is a child process; it would outlive the app otherwise.
         AppState.shared.stopPocketRuntime()
+        // Do Not Disturb is a per-session switch; left set, it would make the CLI skip
+        // requests while the app is not even running.
+        AppState.shared.setDoNotDisturbEnabled(false)
     }
 
     // MARK: - URL Scheme Handling

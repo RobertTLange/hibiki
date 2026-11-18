@@ -1,4 +1,5 @@
 import Foundation
+import HibikiCLICore
 
 /// Handles incoming URL scheme requests from the CLI tool
 final class CLIRequestHandler {
@@ -11,43 +12,27 @@ final class CLIRequestHandler {
     /// Handle an incoming URL request from the CLI
     /// URL format: hibiki://speak?text=<text>&summarize=<bool>&prompt=<text>&translate=<lang>&display=<id>
     func handle(url: URL) {
-        logger.debug("CLIRequestHandler received URL: \(url.absoluteString)", source: "CLI")
+        logger.debug("CLIRequestHandler received URL (\(url.absoluteString.utf8.count) bytes)", source: "CLI")
 
-        guard url.scheme == "hibiki" else {
-            logger.error("Invalid URL scheme: \(url.scheme ?? "nil")", source: "CLI")
+        // Anything on the machine (or a clicked link) can open this URL scheme, so the
+        // request is validated and bounded here, not just in the CLI.
+        let request: CLIRequest
+        do {
+            request = try CLIRequest(url: url)
+        } catch let error as CLIRequestError {
+            logger.error("Rejected URL request: \(error.userMessage)", source: "CLI")
+            return
+        } catch {
+            logger.error("Rejected URL request: \(error.localizedDescription)", source: "CLI")
             return
         }
 
-        guard url.host == "speak" else {
-            logger.error("Unknown URL host: \(url.host ?? "nil")", source: "CLI")
-            return
-        }
-
-        // Parse query parameters
-        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let queryItems = components.queryItems else {
-            logger.error("Failed to parse URL components", source: "CLI")
-            return
-        }
-
-        // Extract text parameter (required)
-        guard let textItem = queryItems.first(where: { $0.name == "text" }),
-              let text = textItem.value,
-              !text.isEmpty else {
-            logger.error("Missing or empty 'text' parameter", source: "CLI")
-            return
-        }
-
-        // Extract summarize flag (optional, defaults to false)
-        let shouldSummarize = queryItems.first(where: { $0.name == "summarize" })?.value == "true"
-
-        // Extract summarization prompt (optional)
-        let rawPrompt = queryItems.first(where: { $0.name == "prompt" })?.value
-        let trimmedPrompt = rawPrompt?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let summarizationPromptOverride = (trimmedPrompt?.isEmpty == false) ? rawPrompt : nil
+        let text = request.text
+        let shouldSummarize = request.summarize
+        let summarizationPromptOverride = request.prompt
 
         // Extract translate parameter (optional)
-        let translateLang = queryItems.first(where: { $0.name == "translate" })?.value
+        let translateLang = request.translate
         let targetLanguage: TargetLanguage?
         if let lang = translateLang {
             targetLanguage = parseLanguageCode(lang)
