@@ -139,6 +139,8 @@ chmod +x ~/.claude/hooks/speak-summary.sh
 
 Then merge `skills/hibiki-tts/hooks.json` into your `~/.claude/settings.json`.
 
+The hook cuts messages at 12,000 characters (the CLI's URL transport limit) and logs nothing by default. Set `HIBIKI_HOOK_DEBUG=1` to write a debug log to `$TMPDIR/hibiki-speak-summary.log`.
+
 ## Security
 
 - Never commit API keys to this repo.
