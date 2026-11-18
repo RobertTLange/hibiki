@@ -748,6 +748,12 @@ final class AppState: ObservableObject {
     @MainActor
     private func performPocketRuntimeStartup(logSource: String) async {
         do {
+            // Checked before the health probe below: selected text must not be sent to a
+            // "managed" endpoint on another machine just because it answers like Pocket.
+            guard PocketTTSRuntimeManager.isLoopbackHost(pocketManagedHost) else {
+                throw PocketRuntimeError.invalidHost(pocketManagedHost)
+            }
+
             try await pocketRuntimeManager.installIfNeeded(venvPath: pocketManagedVenvPath)
 
             let portsToTry = candidateManagedPocketPorts(startingAt: pocketManagedPort)
@@ -821,12 +827,20 @@ final class AppState: ObservableObject {
         return ports
     }
 
-    private func pocketLanguageIsAllowed(_ text: String) -> Bool {
-        guard activeTTSProvider() == .pocketLocal else {
+    /// Pocket's local model only speaks English. What matters is the language of the text
+    /// that will be spoken: the translation target if there is one, otherwise the source
+    /// (a summary stays in the source language).
+    static func pocketCanSpeak(sourceText: String, translatingTo targetLanguage: TargetLanguage) -> Bool {
+        switch targetLanguage {
+        case .english:
             return true
+        case .french, .german, .japanese, .spanish:
+            return false
+        case .none:
+            break
         }
 
-        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
         if normalized.isEmpty {
             return true
         }
@@ -1487,7 +1501,7 @@ final class AppState: ObservableObject {
             ttsConfiguration = resolved
         }
 
-        if provider == .pocketLocal, !pocketLanguageIsAllowed(text) {
+        if provider == .pocketLocal, !Self.pocketCanSpeak(sourceText: text, translatingTo: language) {
             logger.error("Pocket TTS only supports English text right now", source: logSource)
             errorMessage = "Pocket TTS local runtime currently supports English text only."
             markRequestFinished()

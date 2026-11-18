@@ -718,7 +718,7 @@ public final class PocketTTSRuntimeManager: ObservableObject {
     public static func baseURL(host: String, port: Int) -> String {
         "http://\(host):\(port)"
     }
-    private static func isLoopbackHost(_ host: String) -> Bool {
+    public static func isLoopbackHost(_ host: String) -> Bool {
         let normalized = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return normalized == "127.0.0.1" || normalized == "localhost" || normalized == "::1"
     }
