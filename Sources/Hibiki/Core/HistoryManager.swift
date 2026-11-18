@@ -210,7 +210,8 @@ final class HistoryManager {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
             let data = try encoder.encode(entries)
-            try data.write(to: historyFile)
+            // Atomic: a crash or kill mid-write must not leave a truncated file behind.
+            try data.write(to: historyFile, options: .atomic)
         } catch {
             print("[Hibiki] Failed to save history: \(error)")
         }
@@ -221,11 +222,49 @@ final class HistoryManager {
 
         do {
             let data = try Data(contentsOf: historyFile)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            entries = try decoder.decode([HistoryEntry].self, from: data)
+            let decoded = try Self.decodeEntries(from: data)
+            entries = decoded.entries
+            if decoded.droppedCount > 0 {
+                print("[Hibiki] Skipped \(decoded.droppedCount) unreadable history entries")
+                preserveUnreadableHistoryFile(removingOriginal: false)
+            }
         } catch {
+            // The next save would overwrite the file with an empty history; keep it instead.
             print("[Hibiki] Failed to load history: \(error)")
+            preserveUnreadableHistoryFile(removingOriginal: true)
+        }
+    }
+
+    /// Decodes the history file entry by entry, so a single entry that no longer matches the
+    /// schema (or is damaged) costs that entry instead of the whole history.
+    static func decodeEntries(from data: Data) throws -> (entries: [HistoryEntry], droppedCount: Int) {
+        struct Lossy: Decodable {
+            let entry: HistoryEntry?
+
+            init(from decoder: Decoder) throws {
+                entry = try? HistoryEntry(from: decoder)
+            }
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode([Lossy].self, from: data)
+        let entries = decoded.compactMap(\.entry)
+        return (entries, decoded.count - entries.count)
+    }
+
+    private func preserveUnreadableHistoryFile(removingOriginal: Bool) {
+        let stamp = Int(Date().timeIntervalSince1970)
+        let backup = appSupportDirectory.appendingPathComponent("history.unreadable-\(stamp).json")
+        do {
+            if removingOriginal {
+                try FileManager.default.moveItem(at: historyFile, to: backup)
+            } else {
+                try FileManager.default.copyItem(at: historyFile, to: backup)
+            }
+            print("[Hibiki] Kept unreadable history as \(backup.lastPathComponent)")
+        } catch {
+            print("[Hibiki] Could not preserve unreadable history file: \(error)")
         }
     }
 
