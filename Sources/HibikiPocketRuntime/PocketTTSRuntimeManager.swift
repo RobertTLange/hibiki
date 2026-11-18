@@ -83,13 +83,23 @@ public final class PocketTTSRuntimeManager: ObservableObject {
         lastError = nil
         appendLogLine("Installing Pocket TTS runtime with uv...")
 
+        // Validate the target before anything touches the disk: the path is user-editable
+        // and the install replaces whatever lives there.
+        let paths = runtimePaths(venvPath: venvPath)
+        guard Self.isReplaceableVenvDirectory(paths.venvDirectory) else {
+            let error = PocketRuntimeError.unsafeVenvPath(paths.venvDirectory.path)
+            status = .failed
+            lastError = error.localizedDescription
+            appendLogLine(error.localizedDescription)
+            throw error
+        }
+
         guard let uvBinary = resolveUVBinary() else {
             status = .failed
             lastError = PocketRuntimeError.uvMissing.localizedDescription
             throw PocketRuntimeError.uvMissing
         }
 
-        let paths = runtimePaths(venvPath: venvPath)
         try ensureDirectories(paths: paths)
 
         if fileManager.fileExists(atPath: paths.venvDirectory.path) {
@@ -451,8 +461,27 @@ public final class PocketTTSRuntimeManager: ObservableObject {
         }
     }
 
+    /// Whether an install may delete and recreate `directory`.
+    /// Only a missing path, an empty directory, or an existing virtualenv (has `pyvenv.cfg`) qualifies.
+    static func isReplaceableVenvDirectory(_ directory: URL, fileManager: FileManager = .default) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory) else {
+            return true
+        }
+        guard isDirectory.boolValue else {
+            return false
+        }
+        if fileManager.fileExists(atPath: directory.appendingPathComponent("pyvenv.cfg").path) {
+            return true
+        }
+        let contents = try? fileManager.contentsOfDirectory(atPath: directory.path)
+        return contents?.isEmpty == true
+    }
+
     private func runtimePaths(venvPath: String?) -> RuntimePaths {
-        let resolvedVenvPath = normalizedPath(venvPath ?? Self.defaultVenvPath())
+        // A blank path would resolve to the process working directory.
+        let trimmedVenvPath = venvPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let resolvedVenvPath = normalizedPath(trimmedVenvPath.isEmpty ? Self.defaultVenvPath() : trimmedVenvPath)
         let venvDirectory = URL(fileURLWithPath: resolvedVenvPath, isDirectory: true)
         let baseDirectory = venvDirectory.deletingLastPathComponent()
         let logDirectory = baseDirectory.appendingPathComponent("logs", isDirectory: true)

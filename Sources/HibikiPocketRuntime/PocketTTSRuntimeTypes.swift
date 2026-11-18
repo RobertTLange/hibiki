@@ -41,6 +41,7 @@ public struct PocketRuntimeHealth {
 public enum PocketRuntimeError: LocalizedError {
     case uvMissing
     case invalidHost(String)
+    case unsafeVenvPath(String)
     case installFailed(step: String, output: String)
     case runtimeNotInstalled
     case startupFailed(message: String)
@@ -53,6 +54,9 @@ public enum PocketRuntimeError: LocalizedError {
             return "uv was not found. Install uv and retry Pocket TTS setup."
         case .invalidHost(let host):
             return "Managed Pocket runtime only supports localhost. Invalid host: \(host)"
+        case .unsafeVenvPath(let path):
+            return "Refusing to replace \(path): it exists and is not a Python virtualenv. "
+                + "Choose a new or empty directory for the managed venv path."
         case .installFailed(let step, let output):
             let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
