@@ -82,6 +82,9 @@ final class AppState: ObservableObject {
     @Published var activeHistoryReplayEntryId: UUID?
     @Published private(set) var pendingRequestCount: Int = 0
     @Published private(set) var isDoNotDisturbEnabled: Bool = false
+    /// True while the corresponding key is supplied by the environment (process or launchctl).
+    @Published private(set) var openAIKeyFromEnvironment = false
+    @Published private(set) var elevenLabsKeyFromEnvironment = false
 
     @AppStorage("selectedVoice") var selectedVoice: String = TTSVoice.coral.rawValue
     @AppStorage("ttsProvider") var ttsProvider: String = TTSProvider.openAI.rawValue
@@ -377,15 +380,24 @@ final class AppState: ObservableObject {
         if ElevenLabsModel(rawValue: elevenLabsModelID) == nil {
             elevenLabsModelID = TTSConfiguration.defaultElevenLabsModelID
         }
-        if let (envKey, source) = resolvedEnvironmentValue(for: "OPENAI_API_KEY", logSource: "AppState"),
-           apiKey != envKey {
-            apiKey = envKey
-            logger.info("Loaded OpenAI API key from OPENAI_API_KEY via \(source.rawValue)", source: "AppState")
+        // Keys from the environment are read when a request needs them and are never written
+        // to UserDefaults. Earlier versions copied them there, where they outlived the
+        // variable being unset; drop such a copy.
+        if let (envKey, source) = resolvedEnvironmentValue(for: "OPENAI_API_KEY", logSource: "AppState") {
+            openAIKeyFromEnvironment = true
+            if apiKey == envKey {
+                apiKey = ""
+                logger.info("Removed the stored copy of OPENAI_API_KEY; the environment value is used directly", source: "AppState")
+            }
+            logger.info("Using OpenAI API key from OPENAI_API_KEY via \(source.rawValue)", source: "AppState")
         }
-        if let (envKey, source) = resolvedEnvironmentValue(for: "ELEVENLABS_API_KEY", logSource: "AppState"),
-           elevenLabsAPIKey != envKey {
-            elevenLabsAPIKey = envKey
-            logger.info("Loaded ElevenLabs API key from ELEVENLABS_API_KEY via \(source.rawValue)", source: "AppState")
+        if let (envKey, source) = resolvedEnvironmentValue(for: "ELEVENLABS_API_KEY", logSource: "AppState") {
+            elevenLabsKeyFromEnvironment = true
+            if elevenLabsAPIKey == envKey {
+                elevenLabsAPIKey = ""
+                logger.info("Removed the stored copy of ELEVENLABS_API_KEY; the environment value is used directly", source: "AppState")
+            }
+            logger.info("Using ElevenLabs API key from ELEVENLABS_API_KEY via \(source.rawValue)", source: "AppState")
         }
         if pocketBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            let (envBaseURL, source) = resolvedEnvironmentValue(for: "POCKET_TTS_BASE_URL", logSource: "AppState") {
@@ -507,11 +519,12 @@ final class AppState: ObservableObject {
     }
 
     private func resolveOpenAIAPIKey(logSource: String) -> String? {
-        if let (envKey, source) = resolvedEnvironmentValue(for: "OPENAI_API_KEY", logSource: logSource) {
-            if apiKey != envKey {
-                apiKey = envKey
-                logger.info("Loaded OpenAI API key from OPENAI_API_KEY via \(source.rawValue)", source: logSource)
-            }
+        // The environment wins over the Settings field and is not persisted.
+        let envKey = resolvedEnvironmentValue(for: "OPENAI_API_KEY", logSource: logSource)?.0
+        if openAIKeyFromEnvironment != (envKey != nil) {
+            openAIKeyFromEnvironment = envKey != nil
+        }
+        if let envKey {
             return envKey
         }
 
@@ -523,11 +536,11 @@ final class AppState: ObservableObject {
     }
 
     private func resolveElevenLabsAPIKey(logSource: String) -> String? {
-        if let (envKey, source) = resolvedEnvironmentValue(for: "ELEVENLABS_API_KEY", logSource: logSource) {
-            if elevenLabsAPIKey != envKey {
-                elevenLabsAPIKey = envKey
-                logger.info("Loaded ElevenLabs API key from ELEVENLABS_API_KEY via \(source.rawValue)", source: logSource)
-            }
+        let envKey = resolvedEnvironmentValue(for: "ELEVENLABS_API_KEY", logSource: logSource)?.0
+        if elevenLabsKeyFromEnvironment != (envKey != nil) {
+            elevenLabsKeyFromEnvironment = envKey != nil
+        }
+        if let envKey {
             return envKey
         }
 

@@ -146,6 +146,7 @@ The hook cuts messages at 12,000 characters (the CLI's URL transport limit) and 
 - Never commit API keys to this repo.
 - Prefer configuring keys inside Hibiki Settings.
 - For menu bar app launches, prefer `launchctl setenv ...` so Hibiki can read env vars.
+- Keys from the environment take precedence over the Settings fields and are never written to disk. Keys typed into Settings are stored in the app's preferences (`defaults`, plaintext).
 
 ## Cost estimates
 
