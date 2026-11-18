@@ -9,7 +9,7 @@ final class CLIInstallerScriptTests: XCTestCase {
         )
         XCTAssertEqual(
             script,
-            #"do shell script "/bin/rm -f " & quoted form of "/usr/local/bin/hibiki" & " && /bin/ln -s " & "#
+            #"do shell script "/bin/ln -sfh " & "#
                 + #"quoted form of "/Applications/Hibiki.app/Contents/MacOS/hibiki-cli" & " " & "#
                 + #"quoted form of "/usr/local/bin/hibiki" with administrator privileges"#
         )
@@ -18,22 +18,28 @@ final class CLIInstallerScriptTests: XCTestCase {
     /// Regression: the bundle path was pasted between single quotes inside a root shell
     /// command, so a quote in the app's path broke out of the quoting.
     func testHostilePathStaysASingleShellWord() throws {
-        let hostile = #"/Applications/It's "Hibiki" $(touch /tmp/pwned) \ `id`.app/Contents/MacOS/hibiki-cli"#
-        let script = CLIInstaller.adminInstallScript(installPath: "/usr/local/bin/hibiki", bundledPath: hostile)
+        // Paths that exist nowhere: even if the probe below ever stopped replacing the
+        // command, the unprivileged `ln` could only fail.
+        let installPath = "/nonexistent-hibiki-test-dir/bin/hibiki"
+        let hostile = #"/nonexistent-hibiki-test-dir/It's "Hibiki" $(touch /tmp/hibiki-test-pwned) \ `id`.app/hibiki-cli"#
+        let script = CLIInstaller.adminInstallScript(installPath: installPath, bundledPath: hostile)
 
-        // Same script with the privileged commands swapped for a harmless one: the shell
-        // must hand the path back as exactly one, unmodified argument.
+        // Same script with the command swapped for a harmless one and without privileges:
+        // the shell must hand each path back as exactly one, unmodified argument.
+        let command = "/bin/ln -sfh "
+        let privileges = " with administrator privileges"
+        XCTAssertTrue(script.contains(command) && script.hasSuffix(privileges), "script shape changed; update the probe")
         let probe = script
-            .replacingOccurrences(of: "/bin/rm -f ", with: "/usr/bin/printf '%s\\\\n' ")
-            .replacingOccurrences(of: " && /bin/ln -s ", with: " ")
-            .replacingOccurrences(of: " with administrator privileges", with: "")
+            .replacingOccurrences(of: command, with: "/usr/bin/printf '%s\\\\n' ")
+            .replacingOccurrences(of: privileges, with: "")
+        XCTAssertFalse(probe.contains("/bin/ln"))
 
         var error: NSDictionary?
         let output = NSAppleScript(source: probe)?.executeAndReturnError(&error).stringValue
         XCTAssertNil(error, "probe script failed: \(String(describing: error))")
 
         let lines = try XCTUnwrap(output).split(whereSeparator: \.isNewline).map(String.init)
-        XCTAssertEqual(lines, ["/usr/local/bin/hibiki", hostile, "/usr/local/bin/hibiki"])
-        XCTAssertFalse(FileManager.default.fileExists(atPath: "/tmp/pwned"))
+        XCTAssertEqual(lines, [hostile, installPath])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: "/tmp/hibiki-test-pwned"))
     }
 }
