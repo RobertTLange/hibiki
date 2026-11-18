@@ -105,8 +105,11 @@ final class WAVStreamDecoder {
                     throw DecodeError.missingFormatChunk
                 }
 
-                guard buffer.count >= chunkDataStart else { return nil }
-                dataBytesRemaining = chunkSize
+                // A server that streams audio as it is generated cannot know the length up
+                // front and writes a placeholder size (0 or 0xFFFFFFFF). Both mean "until the
+                // stream ends"; taking 0 literally would discard the entire payload.
+                let isUnknownLength = chunkSize == 0 || chunkSize == Int(UInt32.max)
+                dataBytesRemaining = isUnknownLength ? nil : chunkSize
                 state = .streamingPCM
 
                 let availablePayloadCount = buffer.count - chunkDataStart
