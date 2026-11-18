@@ -196,4 +196,59 @@ final class SentenceAccumulatorTests: XCTestCase {
 
         XCTAssertGreaterThan(allSentences.count, 0, "Should extract sentences from document")
     }
+
+    // MARK: - Short fragments
+
+    /// Regression: after a paragraph break, a sentence just under the minimum length was
+    /// found as a boundary (newlines counted towards the minimum), rejected after trimming,
+    /// and found again on every later chunk. Nothing else was emitted until flush, so the
+    /// rest of a summary arrived as one late block of audio.
+    func testShortSentenceAfterParagraphBreakDoesNotStallTheStream() {
+        let accumulator = SentenceAccumulator(minimumSentenceLength: 20)
+
+        XCTAssertEqual(
+            accumulator.accumulate("This first sentence is clearly long enough. "),
+            ["This first sentence is clearly long enough."]
+        )
+        // 18 characters; with the two leading newlines the raw boundary sits at 20.
+        XCTAssertEqual(accumulator.accumulate("\n\nShort heading one. "), [])
+
+        let next = accumulator.accumulate("This following sentence is long enough to emit. ")
+        XCTAssertEqual(next, ["Short heading one. This following sentence is long enough to emit."])
+
+        XCTAssertEqual(
+            accumulator.accumulate("And the stream keeps flowing afterwards. "),
+            ["And the stream keeps flowing afterwards."]
+        )
+        XCTAssertNil(accumulator.flush())
+    }
+
+    func testShortParagraphIsMergedWithTheNextOne() {
+        let accumulator = SentenceAccumulator(minimumSentenceLength: 20)
+
+        // 18 characters + paragraph break: raw boundary at 20, trimmed text below the minimum.
+        XCTAssertEqual(accumulator.accumulate("A short heading ok\n\n"), [])
+        XCTAssertEqual(
+            accumulator.accumulate("Body text that is long enough to stand alone. "),
+            ["A short heading ok\n\nBody text that is long enough to stand alone."]
+        )
+    }
+
+    func testEverythingIsEventuallyEmittedExactlyOnce() {
+        let accumulator = SentenceAccumulator(minimumSentenceLength: 30)
+        let text = "Ok.\n\nYes. No!\n\nA longer sentence that passes the minimum length. Fine.\n\nShort again. "
+            + "Another sentence comfortably over the minimum. Done."
+
+        var emitted: [String] = []
+        for character in text {
+            emitted += accumulator.accumulate(String(character))
+        }
+        if let rest = accumulator.flush() {
+            emitted.append(rest)
+        }
+
+        let words: (String) -> [Substring] = { $0.split(whereSeparator: \.isWhitespace) }
+        XCTAssertEqual(emitted.flatMap(words), words(text))
+        XCTAssertGreaterThan(emitted.count, 1, "must not hold everything back until flush")
+    }
 }
