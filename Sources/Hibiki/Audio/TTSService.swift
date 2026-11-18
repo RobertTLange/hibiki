@@ -137,6 +137,45 @@ final class TTSService: NSObject {
     private var pipelineOnError: ((Error) -> Void)?
     private var pipelineTotalTokens: Int = 0
     private let pipelineQueue = DispatchQueue(label: "com.hibiki.tts.pipeline")
+    private var pipelineTask: URLSessionDataTask?
+
+    /// Bumped on every start and cancel. Network completions capture the value they were
+    /// started under and are dropped once it moves on, so audio from a stopped request can
+    /// never be delivered into the next one.
+    private let generationLock = NSLock()
+    private var generation = 0
+
+    private func currentGeneration() -> Int {
+        generationLock.lock()
+        defer { generationLock.unlock() }
+        return generation
+    }
+
+    private func advanceGeneration() {
+        generationLock.lock()
+        generation += 1
+        generationLock.unlock()
+    }
+
+    private func isCurrent(_ capturedGeneration: Int) -> Bool {
+        capturedGeneration == currentGeneration()
+    }
+
+    /// Input tokens for everything sent to the provider so far, including the request in
+    /// flight. Used to price a request that is stopped before it completes.
+    var estimatedInputTokensSoFar: Int {
+        let completed = totalInputTokens + pipelineQueue.sync { pipelineTotalTokens }
+        let inFlight = inputText.isEmpty ? 0 : max(1, inputText.count / 4)
+        return completed + inFlight
+    }
+
+    /// Streaming session with this object as delegate; replaces (and releases) the previous one.
+    private func makeStreamingSession() -> URLSession {
+        session?.finishTasksAndInvalidate()
+        let newSession = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+        session = newSession
+        return newSession
+    }
 
     func streamSpeech(
         text: String,
@@ -149,9 +188,11 @@ final class TTSService: NSObject {
         print("[Hibiki] Text length: \(text.count), provider: \(configuration.provider.rawValue)")
 
         // Reset all state for new request
+        advanceGeneration()
         accumulatedAudioData = Data()
         inputTokens = 0
         totalInputTokens = 0
+        inputText = ""
         isTokenEstimated = false
         responseHeaders = [:]
         isCancelled = false
@@ -229,6 +270,9 @@ final class TTSService: NSObject {
             )
             accumulatedAudioData = Data()
             totalInputTokens = 0
+            inputText = ""
+            session?.finishTasksAndInvalidate()
+            session = nil
             onComplete?(result)
             return
         }
@@ -291,9 +335,7 @@ final class TTSService: NSObject {
         streamOutputMode = .rawPCM
         wavStreamDecoder = nil
 
-        // Create session with delegate for streaming
-        session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
-        currentTask = session?.dataTask(with: request)
+        currentTask = makeStreamingSession().dataTask(with: request)
         currentTask?.resume()
     }
 
@@ -336,10 +378,11 @@ final class TTSService: NSObject {
 
         print("[Hibiki] 🌐 Making API request to ElevenLabs for chunk \(currentChunkIndex + 1)...")
 
+        let requestGeneration = currentGeneration()
         let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             guard let self = self else { return }
 
-            if self.isCancelled {
+            guard self.isCurrent(requestGeneration), !self.isCancelled else {
                 return
             }
 
@@ -434,17 +477,20 @@ final class TTSService: NSObject {
         streamOutputMode = .wavContainer
         wavStreamDecoder = WAVStreamDecoder()
 
-        session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
-        currentTask = session?.dataTask(with: request)
+        currentTask = makeStreamingSession().dataTask(with: request)
         currentTask?.resume()
     }
 
     func cancel() {
+        advanceGeneration()
         isCancelled = true
         currentTask?.cancel()
         currentTask = nil
+        pipelineTask?.cancel()
+        pipelineTask = nil
         session?.invalidateAndCancel()
         session = nil
+        inputText = ""
         // Reset chunk state
         chunks = []
         currentChunkIndex = 0
@@ -489,7 +535,9 @@ final class TTSService: NSObject {
             pipelineTotalTokens = 0
         }
 
+        advanceGeneration()
         isCancelled = false
+        inputText = ""
         currentConfiguration = configuration
         pipelineOnAudioChunk = onAudioChunk
         pipelineOnSentenceComplete = onSentenceComplete
@@ -631,10 +679,11 @@ final class TTSService: NSObject {
         }
 
         // Use shared URL session for pipeline to avoid delegate issues
+        let requestGeneration = currentGeneration()
         let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             guard let self = self else { return }
 
-            if self.isCancelled {
+            guard self.isCurrent(requestGeneration), !self.isCancelled else {
                 return
             }
 
@@ -675,6 +724,7 @@ final class TTSService: NSObject {
             self.finishCurrentSentence(tokens: estimatedTokens)
         }
 
+        pipelineTask = task
         task.resume()
     }
 
@@ -715,10 +765,11 @@ final class TTSService: NSObject {
             return
         }
 
+        let requestGeneration = currentGeneration()
         let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             guard let self = self else { return }
 
-            if self.isCancelled {
+            guard self.isCurrent(requestGeneration), !self.isCancelled else {
                 return
             }
 
@@ -779,6 +830,7 @@ final class TTSService: NSObject {
             self.finishCurrentSentence(tokens: estimatedTokens)
         }
 
+        pipelineTask = task
         task.resume()
     }
 
@@ -801,10 +853,11 @@ final class TTSService: NSObject {
             voiceURL: configuration.normalizedPocketVoiceURL
         )
 
+        let requestGeneration = currentGeneration()
         let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             guard let self = self else { return }
 
-            if self.isCancelled {
+            guard self.isCurrent(requestGeneration), !self.isCancelled else {
                 return
             }
 
@@ -855,6 +908,7 @@ final class TTSService: NSObject {
             }
         }
 
+        pipelineTask = task
         task.resume()
     }
 
@@ -970,6 +1024,7 @@ final class TTSService: NSObject {
             pipelineTotalTokens += tokens
             isProcessingSentence = false
         }
+        inputText = ""
 
         pipelineOnSentenceComplete?(tokens)
         processNextSentenceIfNeeded()
@@ -978,6 +1033,8 @@ final class TTSService: NSObject {
 
 extension TTSService: URLSessionDataDelegate {
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        // Late callbacks from a session that was cancelled or replaced belong to an old request.
+        guard session === self.session else { return }
         receivedChunkCount += 1
         receivedChunkBytes += data.count
         if receivedChunkCount == 1 || receivedChunkCount % 20 == 0 {
@@ -1006,6 +1063,7 @@ extension TTSService: URLSessionDataDelegate {
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard session === self.session else { return }
         if let error = error {
             // Check if it's a cancellation
             if (error as NSError).code == NSURLErrorCancelled {
@@ -1108,6 +1166,10 @@ extension TTSService: URLSessionDataDelegate {
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        guard session === self.session else {
+            completionHandler(.cancel)
+            return
+        }
         if let httpResponse = response as? HTTPURLResponse {
             print("[Hibiki] 📡 HTTP response: \(httpResponse.statusCode)")
             print("[Hibiki] 📡 Content-Type: \(httpResponse.allHeaderFields["Content-Type"] ?? "unknown")")
