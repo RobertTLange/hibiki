@@ -831,6 +831,17 @@ final class AppState: ObservableObject {
         return ports
     }
 
+    /// Whether to abandon the manually configured Pocket endpoint for the managed runtime.
+    /// Only when something else answers at that address: the setting is persisted, so an
+    /// endpoint that is merely down or slow must not flip it (that request just fails).
+    static func shouldSwitchToManagedPocketRuntime(
+        manualHealth: PocketRuntimeHealth,
+        managedRuntimeInstalled: Bool
+    ) -> Bool {
+        let answered = manualHealth.statusCode != nil
+        return managedRuntimeInstalled && answered && !manualHealth.isHealthy && !manualHealth.isPocketAPI
+    }
+
     /// Pocket's local model only speaks English. What matters is the language of the text
     /// that will be spoken: the translation target if there is one, otherwise the source
     /// (a summary stays in the source language).
@@ -1464,8 +1475,10 @@ final class AppState: ObservableObject {
             guard isStillActive(request.id) else { return }
             if manualHealth.isHealthy {
                 pocketBaseURL = configuredBaseURL
-            } else if !manualHealth.isPocketAPI,
-                      pocketRuntimeManager.hasInstalledRuntime(venvPath: pocketManagedVenvPath) {
+            } else if Self.shouldSwitchToManagedPocketRuntime(
+                manualHealth: manualHealth,
+                managedRuntimeInstalled: pocketRuntimeManager.hasInstalledRuntime(venvPath: pocketManagedVenvPath)
+            ) {
                 logger.warning(
                     "Configured Pocket endpoint is not Pocket API (\(configuredBaseURL)); switching to managed runtime.",
                     source: logSource

@@ -34,4 +34,36 @@ final class PocketLanguageGateTests: XCTestCase {
             XCTAssertFalse(PocketTTSRuntimeManager.isLoopbackHost(host), host)
         }
     }
+
+    // MARK: - Manual endpoint fallback
+
+    private func health(healthy: Bool = false, status: Int?, pocket: Bool = false) -> PocketRuntimeHealth {
+        PocketRuntimeHealth(isHealthy: healthy, statusCode: status, message: nil, isPocketAPI: pocket)
+    }
+
+    func testSwitchesToManagedWhenAnotherServiceAnswers() {
+        XCTAssertTrue(AppState.shouldSwitchToManagedPocketRuntime(
+            manualHealth: health(status: 404), managedRuntimeInstalled: true
+        ))
+        XCTAssertTrue(AppState.shouldSwitchToManagedPocketRuntime(
+            manualHealth: health(status: 200), managedRuntimeInstalled: true
+        ))
+    }
+
+    /// Regression: an endpoint that was merely down or slow (no HTTP answer) also turned
+    /// managed mode on, and that setting persists.
+    func testUnreachableEndpointDoesNotFlipManagedMode() {
+        XCTAssertFalse(AppState.shouldSwitchToManagedPocketRuntime(
+            manualHealth: health(status: nil), managedRuntimeInstalled: true
+        ))
+    }
+
+    func testNeverSwitchesWithoutAnInstalledRuntimeOrFromAHealthyEndpoint() {
+        XCTAssertFalse(AppState.shouldSwitchToManagedPocketRuntime(
+            manualHealth: health(status: 404), managedRuntimeInstalled: false
+        ))
+        XCTAssertFalse(AppState.shouldSwitchToManagedPocketRuntime(
+            manualHealth: health(healthy: true, status: 200, pocket: true), managedRuntimeInstalled: true
+        ))
+    }
 }
