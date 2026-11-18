@@ -169,6 +169,7 @@ final class AppState: ObservableObject {
     private let audioPlayer = StreamingAudioPlayer.shared
     private let accessibilityManager = AccessibilityManager.shared
     let pocketRuntimeManager = PocketTTSRuntimeManager.shared
+    private var pocketStartupTask: Task<Void, Never>?
     private var summarizationTask: Task<Void, Never>?
     private var translationTask: Task<Void, Never>?
     private let interleavedPipeline = InterleavedPipeline()
@@ -708,10 +709,28 @@ final class AppState: ObservableObject {
         processNextRequestIfPossible()
     }
 
+    /// Starts the managed runtime at most once at a time: launch auto-start and the first
+    /// request can arrive together, and a second start would kill the first's server.
     @MainActor
     private func ensurePocketRuntimeStarted(logSource: String) async {
         guard pocketManagedEnabled else { return }
 
+        if let inFlight = pocketStartupTask {
+            await inFlight.value
+            return
+        }
+
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performPocketRuntimeStartup(logSource: logSource)
+        }
+        pocketStartupTask = task
+        await task.value
+        pocketStartupTask = nil
+    }
+
+    @MainActor
+    private func performPocketRuntimeStartup(logSource: String) async {
         do {
             try await pocketRuntimeManager.installIfNeeded(venvPath: pocketManagedVenvPath)
 

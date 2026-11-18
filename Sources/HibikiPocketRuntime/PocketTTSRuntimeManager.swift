@@ -35,7 +35,6 @@ public final class PocketTTSRuntimeManager: ObservableObject {
     private var logFileHandle: FileHandle?
     private let fileManager = FileManager.default
     private let ioQueue = DispatchQueue(label: "com.hibiki.pocket-runtime.io")
-    private var isStopping = false
     private var restartAttempt = 0
     private var launchConfig: ServerLaunchConfig?
     public static func defaultVenvPath() -> String {
@@ -189,12 +188,14 @@ public final class PocketTTSRuntimeManager: ObservableObject {
             throw PocketRuntimeError.runtimeNotInstalled
         }
 
-        stopServer()
+        // Let the previous server release its port before the replacement binds it.
+        if let previous = detachServerProcess() {
+            await waitForExit(of: previous)
+        }
 
         try ensureDirectories(paths: paths)
         try openLogHandle(paths: paths)
 
-        isStopping = false
         status = .starting
         lastError = nil
         launchConfig = ServerLaunchConfig(
@@ -238,7 +239,7 @@ public final class PocketTTSRuntimeManager: ObservableObject {
 
         process.terminationHandler = { [weak self] process in
             Task { @MainActor [weak self] in
-                self?.handleProcessTermination(exitCode: process.terminationStatus)
+                self?.handleProcessTermination(of: process)
             }
         }
 
@@ -247,13 +248,20 @@ public final class PocketTTSRuntimeManager: ObservableObject {
         } catch {
             status = .failed
             lastError = PocketRuntimeError.startupFailed(message: error.localizedDescription).localizedDescription
+            serverProcess = nil
             cleanupPipesAndHandles()
             throw PocketRuntimeError.startupFailed(message: error.localizedDescription)
         }
 
         let baseURL = Self.baseURL(host: normalizedHost, port: port)
-        let healthy = await waitForHealthy(baseURL: baseURL, timeoutSeconds: 20)
-        if healthy, serverProcess?.isRunning == true {
+        let healthy = await waitForHealthy(of: process, baseURL: baseURL, timeoutSeconds: 20)
+
+        // A newer start/stop call took over while this one was waiting; leave its state alone.
+        guard serverProcess === process else {
+            throw PocketRuntimeError.startupFailed(message: "Superseded by a newer start or stop request.")
+        }
+
+        if healthy, process.isRunning {
             status = .running
             restartAttempt = 0
             appendLogLine("Pocket TTS server is healthy.")
@@ -268,20 +276,35 @@ public final class PocketTTSRuntimeManager: ObservableObject {
 
     @MainActor
     public func stopServer() {
-        guard let process = serverProcess else {
-            status = .stopped
-            cleanupPipesAndHandles()
-            return
+        if detachServerProcess() != nil {
+            appendLogLine("Pocket TTS server stopped.")
         }
+        status = .stopped
+    }
 
-        isStopping = true
-        if process.isRunning {
+    /// Terminates the current server and forgets it, so its exit is never mistaken for a crash
+    /// of whatever server is started next.
+    @MainActor
+    @discardableResult
+    private func detachServerProcess() -> Process? {
+        let process = serverProcess
+        serverProcess = nil
+        cleanupPipesAndHandles()
+        if let process, process.isRunning {
             process.terminate()
         }
+        return process
+    }
 
-        stdoutPipe?.fileHandleForReading.readabilityHandler = nil
-        stderrPipe?.fileHandleForReading.readabilityHandler = nil
-        status = .stopped
+    @MainActor
+    private func waitForExit(of process: Process, timeoutSeconds: TimeInterval = 3) async {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while process.isRunning, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        if process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+        }
     }
 
     @MainActor
@@ -365,21 +388,21 @@ public final class PocketTTSRuntimeManager: ObservableObject {
     }
 
     @MainActor
-    private func waitForHealthy(baseURL: String, timeoutSeconds: TimeInterval) async -> Bool {
+    private func waitForHealthy(of process: Process, baseURL: String, timeoutSeconds: TimeInterval) async -> Bool {
         let deadline = Date().addingTimeInterval(timeoutSeconds)
         while Date() < deadline {
             if Task.isCancelled {
                 return false
             }
-            guard serverProcess?.isRunning == true else {
+            guard serverProcess === process, process.isRunning else {
                 return false
             }
             let health = await healthCheck(baseURL: baseURL)
+            guard serverProcess === process, process.isRunning else {
+                return false
+            }
             if health.isHealthy {
                 return true
-            }
-            guard serverProcess?.isRunning == true else {
-                return false
             }
             try? await Task.sleep(nanoseconds: 300_000_000)
         }
@@ -415,18 +438,13 @@ public final class PocketTTSRuntimeManager: ObservableObject {
     }
 
     @MainActor
-    private func handleProcessTermination(exitCode: Int32) {
-        defer {
-            serverProcess = nil
-            cleanupPipesAndHandles()
-        }
+    private func handleProcessTermination(of process: Process) {
+        // Servers stopped on purpose are detached first, so only the current one can crash.
+        guard process === serverProcess else { return }
 
-        if isStopping {
-            isStopping = false
-            status = .stopped
-            appendLogLine("Pocket TTS server stopped.")
-            return
-        }
+        let exitCode = process.terminationStatus
+        serverProcess = nil
+        cleanupPipesAndHandles()
 
         appendLogLine("Pocket TTS server exited unexpectedly (\(exitCode)).")
 
@@ -510,7 +528,8 @@ public final class PocketTTSRuntimeManager: ObservableObject {
         }
         let handle = try FileHandle(forWritingTo: paths.logFile)
         handle.seekToEndOfFile()
-        logFileHandle = handle
+        // logFileHandle is confined to ioQueue; a queued close from the previous server runs first.
+        ioQueue.sync { logFileHandle = handle }
     }
 
     private func cleanupPipesAndHandles() {

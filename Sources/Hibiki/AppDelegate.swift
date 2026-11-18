@@ -566,6 +566,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         StreamingAudioPlayer.shared.stop()
         removeKeyboardMonitor()
+        // The managed Pocket server is a child process; it would outlive the app otherwise.
+        AppState.shared.stopPocketRuntime()
     }
 
     // MARK: - URL Scheme Handling
