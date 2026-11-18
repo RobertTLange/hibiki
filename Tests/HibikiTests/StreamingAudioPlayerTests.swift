@@ -1,12 +1,23 @@
 import XCTest
 @testable import Hibiki
 
+/// These tests drive a real `AVAudioEngine` (playing silence), so they need an audio output
+/// device. Set `HIBIKI_SKIP_AUDIO_TESTS=1` where there is none, e.g. on hosted CI runners.
 final class StreamingAudioPlayerTests: XCTestCase {
-    private let player = StreamingAudioPlayer.shared
+    private var player: StreamingAudioPlayer!
+
+    override func setUpWithError() throws {
+        try XCTSkipIf(
+            ProcessInfo.processInfo.environment["HIBIKI_SKIP_AUDIO_TESTS"] != nil,
+            "HIBIKI_SKIP_AUDIO_TESTS is set"
+        )
+        player = StreamingAudioPlayer.shared
+    }
 
     override func tearDown() {
-        player.onPlaybackComplete = nil
-        player.stop()
+        player?.onPlaybackComplete = nil
+        player?.stop()
+        player = nil
         super.tearDown()
     }
 

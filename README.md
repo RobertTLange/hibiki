@@ -236,4 +236,6 @@ swift test           # unit + stubbed end-to-end tests (no network, no API keys)
 ./build.sh           # assemble and ad-hoc sign .build/Hibiki.app
 ```
 
+CI (`.github/workflows/ci.yml`) runs `swift build` and `swift test` on macOS for pushes to `main` and pull requests. The audio-engine tests need an output device; set `HIBIKI_SKIP_AUDIO_TESTS=1` to skip them where there is none.
+
 `./build.sh` resets the Accessibility permission for `com.superlisten.hibiki`, including an installed copy of the app; re-grant it in System Settings afterwards.
