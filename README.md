@@ -90,7 +90,7 @@ Note: Pocket local mode is currently English-only in Hibiki.
 
 ## CLI Usage
 
-The Hibiki app must be running. Use hotkeys (Option+F, Shift+Option+F) for GUI-based TTS.
+The CLI talks to the Hibiki app and launches it if it is not running. Use hotkeys (Option+F, Shift+Option+F) for GUI-based TTS.
 
 ```bash
 hibiki --text "Hello, world!"                        # Basic TTS
@@ -107,7 +107,7 @@ hibiki --text "Article..." --summarize --translate fr # Full pipeline
 **Input source:** use exactly one of `--text` or `--file-name`.
 **File decoding:** `--file-name` expects UTF-8 text files.
 **Markdown cleanup:** `.md` / `.markdown` files get balanced cleanup (frontmatter/comments removed, headings/lists normalized, links simplified, code fences converted for speech).
-**Input size limit:** request URL payload must stay under ~32KB after encoding; very large files should be summarized or split.
+**Input size limit:** request URL payload must stay under ~32KB after encoding. `--summarize` runs in the app after transport, so it does not lift the limit; shorten or split very large inputs first.
 
 ## Agent Integration
 
