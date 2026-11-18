@@ -109,6 +109,7 @@ hibiki --text "Article..." --summarize --translate fr # Full pipeline
 **Input source:** use exactly one of `--text` or `--file-name`.
 **File decoding:** `--file-name` expects UTF-8 text files.
 **Markdown cleanup:** `.md` / `.markdown` files get balanced cleanup (frontmatter/comments removed, headings/lists normalized, links simplified, code fences converted for speech).
+**Queueing:** requests are spoken one after another; at most 20 can wait, further ones are dropped.
 **Input size limit:** request URL payload must stay under ~32KB after encoding. `--summarize` runs in the app after transport, so it does not lift the limit; shorten or split very large inputs first.
 
 ## Agent Integration
@@ -141,7 +142,7 @@ chmod +x ~/.claude/hooks/speak-summary.sh
 
 Then merge `skills/hibiki-tts/hooks.json` into your `~/.claude/settings.json`.
 
-The hook cuts messages at 12,000 characters (the CLI's URL transport limit) and logs nothing by default. Set `HIBIKI_HOOK_DEBUG=1` to write a debug log to `$TMPDIR/hibiki-speak-summary.log`.
+The hook cuts messages that would exceed the CLI's URL transport limit and logs nothing by default. Set `HIBIKI_HOOK_DEBUG=1` to write a debug log to `$TMPDIR/hibiki-speak-summary.log`.
 
 ## Security
 
@@ -185,7 +186,7 @@ Sources/
 │   ├── CLIInputResolver.swift       # --text / --file-name resolution, markdown cleanup
 │   └── DoNotDisturbPolicy.swift     # Do Not Disturb flag shared between CLI and app
 ├── HibikiShared/
-│   ├── LLMModel.swift               # LLM models, pricing, default-model migration
+│   ├── LLMModel.swift               # LLM models and pricing
 │   └── PlaybackSettings.swift       # Speed/volume clamping
 ├── HibikiPocketRuntime/
 │   ├── PocketTTSRuntimeManager.swift    # Managed local Pocket runtime install/start/health
@@ -206,7 +207,8 @@ Sources/
     │   ├── PermissionManager.swift      # Permission checking
     │   ├── DebugLogger.swift        # In-app debug logging
     │   ├── HistoryManager.swift     # TTS history and retention
-    │   ├── HistoryEntry.swift       # History data model, TTS pricing
+    │   ├── HistoryEntry.swift       # History data model
+    │   ├── TTSPricing.swift         # Per-provider TTS cost estimates
     │   ├── UsageLedger.swift        # Per-day usage totals, independent of history retention
     │   └── UsageStatistics.swift    # Usage statistics from the ledger
     ├── Audio/

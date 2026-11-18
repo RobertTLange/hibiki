@@ -37,7 +37,7 @@ final class CLIRequestHandler {
         if let lang = translateLang {
             targetLanguage = parseLanguageCode(lang)
             if targetLanguage == nil {
-                logger.error("Invalid language code: \(lang)", source: "CLI")
+                logger.error("Invalid language code: \(lang.prefix(16))", source: "CLI")
                 return
             }
         } else {
