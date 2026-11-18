@@ -380,22 +380,15 @@ final class AppState: ObservableObject {
             elevenLabsModelID = TTSConfiguration.defaultElevenLabsModelID
         }
         // Keys from the environment are read when a request needs them and are never written
-        // to UserDefaults. Earlier versions copied them there, where they outlived the
-        // variable being unset; drop such a copy.
-        if let (envKey, source) = resolvedEnvironmentValue(for: "OPENAI_API_KEY", logSource: "AppState") {
+        // to UserDefaults. A key already stored there is left alone: it cannot be told apart
+        // from one typed into Settings, and removing it would leave the app without a key
+        // the next time it is launched without that environment (e.g. from Finder).
+        if let (_, source) = resolvedEnvironmentValue(for: "OPENAI_API_KEY", logSource: "AppState") {
             openAIKeyFromEnvironment = true
-            if apiKey == envKey {
-                apiKey = ""
-                logger.info("Removed the stored copy of OPENAI_API_KEY; the environment value is used directly", source: "AppState")
-            }
             logger.info("Using OpenAI API key from OPENAI_API_KEY via \(source.rawValue)", source: "AppState")
         }
-        if let (envKey, source) = resolvedEnvironmentValue(for: "ELEVENLABS_API_KEY", logSource: "AppState") {
+        if let (_, source) = resolvedEnvironmentValue(for: "ELEVENLABS_API_KEY", logSource: "AppState") {
             elevenLabsKeyFromEnvironment = true
-            if elevenLabsAPIKey == envKey {
-                elevenLabsAPIKey = ""
-                logger.info("Removed the stored copy of ELEVENLABS_API_KEY; the environment value is used directly", source: "AppState")
-            }
             logger.info("Using ElevenLabs API key from ELEVENLABS_API_KEY via \(source.rawValue)", source: "AppState")
         }
         if pocketBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
