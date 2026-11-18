@@ -9,7 +9,7 @@ final class HistoryDecodingTests: XCTestCase {
     }
 
     private func entry(_ text: String) -> HistoryEntry {
-        HistoryEntry(text: text, voice: "coral", inputTokens: 10, audioFileName: "\(text).pcm")
+        HistoryEntry(text: text, voice: "coral", inputTokens: 10, audioFileName: "\(text).pcm", ttsCost: 0.01)
     }
 
     func testRoundTrip() throws {

@@ -66,6 +66,7 @@ final class HistoryManager {
         text: String,
         voice: String,
         inputTokens: Int,
+        ttsBilling: TTSBilling,
         audioData: Data,
         summarizedText: String? = nil,
         llmInputTokens: Int? = nil,
@@ -85,6 +86,11 @@ final class HistoryManager {
             voice: voice,
             inputTokens: inputTokens,
             audioFileName: audioFileName,
+            ttsCost: TTSPricing.cost(
+                billing: ttsBilling,
+                inputTokens: inputTokens,
+                audioSeconds: Double(audioData.count) / 48_000.0  // 24kHz 16-bit mono
+            ),
             summarizedText: summarizedText,
             llmInputTokens: llmInputTokens,
             llmOutputTokens: llmOutputTokens,

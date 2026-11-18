@@ -37,6 +37,7 @@ struct HistoryEntry: Identifiable, Codable, Sendable {
         voice: String,
         inputTokens: Int,
         audioFileName: String,
+        ttsCost: Double,
         summarizedText: String? = nil,
         llmInputTokens: Int? = nil,
         llmOutputTokens: Int? = nil,
@@ -69,12 +70,8 @@ struct HistoryEntry: Identifiable, Codable, Sendable {
         self.translationModel = translationModel
         self.targetLanguage = targetLanguage
 
-        // Local providers are free from API billing perspective.
-        if voice.hasPrefix("pocket:") {
-            self.ttsCost = 0
-        } else {
-            self.ttsCost = TTSPricing.calculateCost(inputTokens: inputTokens)
-        }
+        // Priced by the caller, which knows the provider, model and audio length (TTSPricing).
+        self.ttsCost = ttsCost
 
         // Calculate LLM cost if applicable (summarization)
         if let llmIn = llmInputTokens, let llmOut = llmOutputTokens, let model = llmModel {
@@ -189,14 +186,5 @@ struct HistoryEntry: Identifiable, Codable, Sendable {
         } else {
             return String(format: "%d:%02d", minutes, seconds)
         }
-    }
-}
-
-enum TTSPricing {
-    // gpt-4o-mini-tts pricing: $0.60 per 1M input tokens
-    static let costPerMillionTokens: Double = 0.60
-
-    static func calculateCost(inputTokens: Int) -> Double {
-        return Double(inputTokens) / 1_000_000.0 * costPerMillionTokens
     }
 }

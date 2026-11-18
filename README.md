@@ -147,6 +147,17 @@ The hook cuts messages at 12,000 characters (the CLI's URL transport limit) and 
 - Prefer configuring keys inside Hibiki Settings.
 - For menu bar app launches, prefer `launchctl setenv ...` so Hibiki can read env vars.
 
+## Cost estimates
+
+The Statistics tab shows estimates from list prices, not invoices:
+
+- **OpenAI TTS** (`gpt-4o-mini-tts`): $0.60 per 1M input tokens plus about $0.015 per minute of generated audio (OpenAI bills audio at $12 per 1M audio tokens and does not report the count).
+- **ElevenLabs**: $0.10 per 1,000 characters for Multilingual v2 / v3, $0.05 for Flash / Turbo. Subscription plans may differ.
+- **Pocket TTS**: local, free.
+- **Summarization / translation**: per-model token prices in `Sources/HibikiShared/LLMModel.swift`.
+
+Totals are kept in `usage-ledger.json`, separately from history, so they are not affected by history retention or by clearing history. Entries recorded before these rates were introduced keep the cost stored with them.
+
 ## Troubleshooting
 
 | Issue | Solution |

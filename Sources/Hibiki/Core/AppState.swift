@@ -184,6 +184,7 @@ final class AppState: ObservableObject {
     private var pendingHistorySave: (
         text: String,
         voice: String,
+        billing: TTSBilling,
         inputTokens: Int,
         summarizedText: String?,
         llmInputTokens: Int?,
@@ -1285,6 +1286,7 @@ final class AppState: ObservableObject {
                 text: pending.text,
                 voice: pending.voice,
                 inputTokens: pending.inputTokens,
+                ttsBilling: pending.billing,
                 audioData: audioSnapshot,
                 summarizedText: pending.summarizedText,
                 llmInputTokens: pending.llmInputTokens,
@@ -1329,6 +1331,7 @@ final class AppState: ObservableObject {
                 text: pending.text,
                 voice: pending.voice,
                 inputTokens: pending.inputTokens,
+                ttsBilling: pending.billing,
                 audioData: audioSnapshot,
                 summarizedText: pending.summarizedText,
                 llmInputTokens: pending.llmInputTokens,
@@ -1604,6 +1607,7 @@ final class AppState: ObservableObject {
         pendingHistorySave = (
             text: text,
             voice: ttsConfiguration.historyVoiceLabel,
+            billing: TTSPricing.billing(for: ttsConfiguration),
             inputTokens: 0,
             summarizedText: nil,
             llmInputTokens: nil,
@@ -1717,6 +1721,7 @@ final class AppState: ObservableObject {
             self.pendingHistorySave = (
                 text: text,
                 voice: ttsConfiguration.historyVoiceLabel,
+                billing: TTSPricing.billing(for: ttsConfiguration),
                 inputTokens: result.ttsInputTokens,
                 summarizedText: result.summarizedText,
                 llmInputTokens: result.summarizationInputTokens,
@@ -1833,6 +1838,7 @@ final class AppState: ObservableObject {
             pendingHistorySave = (
                 text: text,
                 voice: ttsConfiguration.historyVoiceLabel,
+                billing: TTSPricing.billing(for: ttsConfiguration),
                 inputTokens: 0,
                 summarizedText: nil,
                 llmInputTokens: nil,
@@ -1956,6 +1962,7 @@ final class AppState: ObservableObject {
             self.pendingHistorySave = (
                 text: text,
                 voice: ttsConfiguration.historyVoiceLabel,
+                billing: TTSPricing.billing(for: ttsConfiguration),
                 inputTokens: result.ttsInputTokens,
                 summarizedText: result.summarizedText,
                 llmInputTokens: result.summarizationInputTokens,

@@ -22,8 +22,8 @@ final class UsageLedgerTests: XCTestCase {
         calendar.date(from: DateComponents(year: year, month: month, day: day, hour: hour))!
     }
 
-    private func entry(on date: Date, text: String = "one two three", tokens: Int = 1_000_000) -> HistoryEntry {
-        HistoryEntry(timestamp: date, text: text, voice: "coral", inputTokens: tokens, audioFileName: "a.pcm")
+    private func entry(on date: Date, text: String = "one two three", tokens: Int = 1_000) -> HistoryEntry {
+        HistoryEntry(timestamp: date, text: text, voice: "coral", inputTokens: tokens, audioFileName: "a.pcm", ttsCost: 0.25)
     }
 
     private func makeLedger() -> UsageLedger {
@@ -46,7 +46,8 @@ final class UsageLedgerTests: XCTestCase {
         XCTAssertEqual(totals[day]?.requestCount, 2)
         XCTAssertEqual(totals[day]?.wordCount, 6)
         XCTAssertEqual(totals[day]?.audioSeconds ?? 0, 90, accuracy: 0.001)
-        XCTAssertEqual(totals[day]?.ttsCost ?? 0, 2 * TTSPricing.calculateCost(inputTokens: 1_000_000), accuracy: 1e-9)
+        XCTAssertEqual(totals[day]?.ttsCost ?? 0, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(totals[day]?.cost ?? 0, 0.5, accuracy: 1e-9)
     }
 
     func testTotalsSurviveReload() {
