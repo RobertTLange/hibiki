@@ -215,7 +215,7 @@ public final class PocketTTSRuntimeManager: ObservableObject {
             "--port", String(port),
             "--voice", effectiveVoice
         ]
-        process.environment = ProcessInfo.processInfo.environment
+        process.environment = Self.childEnvironment()
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -577,7 +577,7 @@ public final class PocketTTSRuntimeManager: ObservableObject {
         }
     }
 
-    private func runCommand(
+    func runCommand(
         executablePath: String,
         arguments: [String]
     ) async throws -> (exitCode: Int32, output: String) {
@@ -585,22 +585,26 @@ public final class PocketTTSRuntimeManager: ObservableObject {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: executablePath)
             process.arguments = arguments
-            process.environment = ProcessInfo.processInfo.environment
+            process.environment = Self.childEnvironment()
 
             let outputPipe = Pipe()
             process.standardOutput = outputPipe
             process.standardError = outputPipe
 
-            process.terminationHandler = { process in
-                let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: data, encoding: .utf8) ?? ""
-                continuation.resume(returning: (process.terminationStatus, output))
-            }
-
             do {
                 try process.run()
             } catch {
                 continuation.resume(throwing: error)
+                return
+            }
+
+            // Drain while the child runs: reading only after exit deadlocks once the
+            // pipe buffer (~64KB) fills, e.g. on a verbose `uv pip install`.
+            DispatchQueue.global(qos: .utility).async {
+                let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                let output = String(data: data, encoding: .utf8) ?? ""
+                continuation.resume(returning: (process.terminationStatus, output))
             }
         }
     }
@@ -701,6 +705,16 @@ public final class PocketTTSRuntimeManager: ObservableObject {
             return false
         }
     }
+    /// Environment for `uv` and the Pocket server. Cloud API keys (often present via
+    /// `launchctl setenv`) are none of a local model server's business.
+    static func childEnvironment(
+        from environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String: String] {
+        environment.filter { key, _ in
+            !["OPENAI_API_KEY", "ELEVENLABS_API_KEY"].contains(key)
+        }
+    }
+
     public static func baseURL(host: String, port: Int) -> String {
         "http://\(host):\(port)"
     }

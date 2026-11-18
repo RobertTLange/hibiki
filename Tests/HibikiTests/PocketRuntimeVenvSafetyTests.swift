@@ -45,6 +45,27 @@ final class PocketRuntimeVenvSafetyTests: XCTestCase {
         XCTAssertFalse(PocketTTSRuntimeManager.isReplaceableVenvDirectory(home))
     }
 
+    /// Regression: output was only read after exit, so a child writing more than the pipe
+    /// buffer blocked forever and the install never finished.
+    func testRunCommandDrainsLargeOutput() async throws {
+        let result = try await PocketTTSRuntimeManager.shared.runCommand(
+            executablePath: "/usr/bin/python3",
+            arguments: ["-c", "import sys; sys.stdout.write('x' * 300000); sys.exit(3)"]
+        )
+        XCTAssertEqual(result.exitCode, 3)
+        XCTAssertEqual(result.output.count, 300_000)
+    }
+
+    func testChildEnvironmentDropsCloudAPIKeys() {
+        let environment = PocketTTSRuntimeManager.childEnvironment(from: [
+            "PATH": "/usr/bin",
+            "OPENAI_API_KEY": "sk-test",
+            "ELEVENLABS_API_KEY": "el-test",
+            "HF_HOME": "/tmp/hf"
+        ])
+        XCTAssertEqual(environment, ["PATH": "/usr/bin", "HF_HOME": "/tmp/hf"])
+    }
+
     /// Regression: a managed venv path pointing at a normal directory used to be deleted recursively.
     @MainActor
     func testReinstallRefusesToDeleteNonVenvDirectory() async throws {
