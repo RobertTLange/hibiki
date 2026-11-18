@@ -59,4 +59,26 @@ final class StreamingAudioPlayerTests: XCTestCase {
 
         wait(for: [completed], timeout: 5)
     }
+
+    /// Regression: the completion notification was queued for the main thread without any
+    /// link to its playback session. If playback was restarted before it ran (seek, replay
+    /// click), it was delivered to the new session and ended it.
+    func testCompletionOfAReplacedSessionIsNotDelivered() {
+        player.reset()
+        player.onPlaybackComplete = { XCTFail("the first session was replaced before its completion ran") }
+        player.enqueue(pcmData: Data(count: 14_400))  // 0.3s
+        player.markStreamComplete()
+
+        // Let the audio finish while the main thread is busy, so the completion is queued
+        // behind us, then replace the session before the main queue gets to run it.
+        Thread.sleep(forTimeInterval: 1.0)
+        player.stop()
+        player.reset()
+
+        let staleCompletion = expectation(description: "stale completion delivered to the new session")
+        staleCompletion.isInverted = true
+        player.onPlaybackComplete = { staleCompletion.fulfill() }
+
+        wait(for: [staleCompletion], timeout: 0.5)
+    }
 }

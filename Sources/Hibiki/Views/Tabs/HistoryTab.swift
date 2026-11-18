@@ -44,10 +44,9 @@ final class HistoryPlaybackManager: ObservableObject {
         appState.seekHistoryReplay(for: entry, to: progress)
     }
 
-    /// Stops the replay; live speech is left alone.
+    /// Stops the replay; live speech and queued requests are left alone.
     func stop() {
-        guard appState.activeHistoryReplayEntryId != nil else { return }
-        appState.stopPlayback()
+        appState.stopHistoryReplay()
     }
 }
 

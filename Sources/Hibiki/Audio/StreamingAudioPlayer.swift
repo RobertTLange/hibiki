@@ -332,7 +332,10 @@ final class StreamingAudioPlayer {
         let generation = playbackGeneration
         scheduledBufferCount += 1
         totalScheduledSamples += Int64(buffer.frameLength)
-        playerNode.scheduleBuffer(buffer) { [weak self] in
+        // `.dataPlayedBack`: the handler runs once the audio has left the output, not when the
+        // player has merely consumed the buffer. Completion stops the engine, so reporting
+        // early would cut off the end of the speech still in the time-pitch node and device.
+        playerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             self?.bufferQueue.async {
                 guard let self = self else { return }
                 // Ignore callbacks from old playback sessions or during stopping
@@ -374,8 +377,15 @@ final class StreamingAudioPlayer {
         // A finished stream with nothing scheduled (empty or whitespace-only text, provider
         // returned no audio) still has to complete, or the request queue blocks forever.
         if isStreamFinished && completedBufferCount >= scheduledBufferCount {
+            // Tie the notification to this playback session: if playback is stopped or
+            // restarted before the main queue gets to it, it must not be delivered to (and
+            // end) the session that replaced it.
+            let generation = playbackGeneration
             DispatchQueue.main.async { [weak self] in
-                self?.onPlaybackComplete?()
+                guard let self else { return }
+                let isSameSession = self.bufferQueue.sync { self.playbackGeneration == generation }
+                guard isSameSession else { return }
+                self.onPlaybackComplete?()
             }
         }
     }

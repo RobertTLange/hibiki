@@ -1087,10 +1087,33 @@ final class AppState: ObservableObject {
     @MainActor
     func toggleHistoryReplay(for entry: HistoryEntry) {
         if activeHistoryReplayEntryId == entry.id {
-            stopPlayback()
+            stopHistoryReplay()
             return
         }
         startHistoryReplay(entry)
+    }
+
+    /// Stop a replay and nothing else. Unlike `stopPlayback()` this keeps requests that
+    /// queued up behind the replay (CLI, hooks) and lets the next one start.
+    @MainActor
+    func stopHistoryReplay() {
+        guard endHistoryReplay() else { return }
+        markRequestFinished()
+    }
+
+    /// - Returns: false if no replay was playing.
+    @MainActor
+    private func endHistoryReplay() -> Bool {
+        guard activeHistoryReplayEntryId != nil else { return false }
+        logger.info("Stopping history replay", source: "AppState")
+        stopProgressTracking()
+        audioPlayer.stop()
+        audioLevelMonitor.stopMonitoring()
+        isPlaying = false
+        clearHistoryReplayState()
+        currentText = nil
+        displayText = ""
+        return true
     }
 
     /// Jump within the entry currently being replayed (`progress` is 0...1 of the whole entry).
@@ -1105,7 +1128,10 @@ final class AppState: ObservableObject {
 
     @MainActor
     private func startHistoryReplay(_ entry: HistoryEntry) {
-        if isPlaying || isSummarizing || isTranslating || isLoading {
+        // Switching from one replay to another keeps queued requests; interrupting live
+        // speech stops it the usual way.
+        let wasReplaying = endHistoryReplay()
+        if !wasReplaying, isPlaying || isSummarizing || isTranslating || isLoading {
             stopPlayback()
         }
 
@@ -1168,7 +1194,8 @@ final class AppState: ObservableObject {
         audioPlayer.setEstimatedDuration(forTextLength: max(1, entry.displayText.count))
         audioPlayer.onPlaybackComplete = { [weak self] in
             self?.logger.info("History replay complete", source: "AppState")
-            Task { @MainActor in
+            // Delivered on the main queue; no extra hop, so a stop cannot slip in between.
+            MainActor.assumeIsolated {
                 self?.handlePlaybackComplete()
             }
         }
@@ -1630,7 +1657,8 @@ final class AppState: ObservableObject {
         // Set up playback completion callback
         audioPlayer.onPlaybackComplete = { [weak self] in
             self?.logger.info("Audio playback complete", source: logSource)
-            Task { @MainActor in
+            // Delivered on the main queue; no extra hop, so a stop cannot slip in between.
+            MainActor.assumeIsolated {
                 self?.handlePlaybackComplete()
             }
         }
@@ -1724,6 +1752,8 @@ final class AppState: ObservableObject {
 
             self.displayText = result.summarizedText
             self.currentText = result.summarizedText
+            // The estimate so far was a guess from the source length; the spoken text is known now.
+            self.audioPlayer.setEstimatedDuration(forTextLength: result.summarizedText.count)
 
             self.pendingHistorySave = (
                 text: text,
@@ -1754,7 +1784,8 @@ final class AppState: ObservableObject {
 
         audioPlayer.onPlaybackComplete = { [weak self] in
             self?.logger.info("Audio playback complete", source: logSource)
-            Task { @MainActor in
+            // Delivered on the main queue; no extra hop, so a stop cannot slip in between.
+            MainActor.assumeIsolated {
                 self?.handlePlaybackComplete()
             }
         }
@@ -1862,7 +1893,8 @@ final class AppState: ObservableObject {
 
             audioPlayer.onPlaybackComplete = { [weak self] in
                 self?.logger.info("Audio playback complete", source: logSource)
-                Task { @MainActor in
+                // Delivered on the main queue; no extra hop, so a stop cannot slip in between.
+                MainActor.assumeIsolated {
                     self?.handlePlaybackComplete()
                 }
             }
@@ -1965,6 +1997,7 @@ final class AppState: ObservableObject {
             let finalText = result.translatedText ?? result.summarizedText
             self.displayText = finalText
             self.currentText = finalText
+            self.audioPlayer.setEstimatedDuration(forTextLength: finalText.count)
 
             self.pendingHistorySave = (
                 text: text,
@@ -1996,7 +2029,8 @@ final class AppState: ObservableObject {
 
         audioPlayer.onPlaybackComplete = { [weak self] in
             self?.logger.info("Audio playback complete", source: logSource)
-            Task { @MainActor in
+            // Delivered on the main queue; no extra hop, so a stop cannot slip in between.
+            MainActor.assumeIsolated {
                 self?.handlePlaybackComplete()
             }
         }
