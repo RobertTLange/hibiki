@@ -195,6 +195,10 @@ final class AppState: ObservableObject {
         targetLanguage: String?
     )?
     private var historySaved = false
+    /// Audio of the entry being replayed, kept so seeking does not re-read it from disk.
+    private var historyReplayAudio: (entryID: UUID, data: Data)?
+    /// Share of the replayed entry that precedes the audio loaded in the player (after a seek).
+    private var historyReplayStartFraction: Double = 0
     private enum RequestSource: String {
         case cli
         case manual
@@ -1055,6 +1059,31 @@ final class AppState: ObservableObject {
             return
         }
 
+        startHistoryReplay(entry)
+    }
+
+    /// History tab: clicking the entry that is playing stops it, anything else starts it.
+    @MainActor
+    func toggleHistoryReplay(for entry: HistoryEntry) {
+        if activeHistoryReplayEntryId == entry.id {
+            stopPlayback()
+            return
+        }
+        startHistoryReplay(entry)
+    }
+
+    /// Jump within the entry currently being replayed (`progress` is 0...1 of the whole entry).
+    @MainActor
+    func seekHistoryReplay(for entry: HistoryEntry, to progress: Double) {
+        guard isPlaying,
+              activeHistoryReplayEntryId == entry.id,
+              let cached = historyReplayAudio,
+              cached.entryID == entry.id else { return }
+        playHistoryEntry(entry, audioData: cached.data, startFraction: progress)
+    }
+
+    @MainActor
+    private func startHistoryReplay(_ entry: HistoryEntry) {
         if isPlaying || isSummarizing || isTranslating || isLoading {
             stopPlayback()
         }
@@ -1064,7 +1093,7 @@ final class AppState: ObservableObject {
             return
         }
 
-        playHistoryEntry(entry, audioData: audioData)
+        playHistoryEntry(entry, audioData: audioData, startFraction: 0)
     }
 
     /// Play/pause the most recent transcribed audio track from history
@@ -1086,8 +1115,14 @@ final class AppState: ObservableObject {
     }
 
     @MainActor
-    private func playHistoryEntry(_ entry: HistoryEntry, audioData: Data) {
+    private func playHistoryEntry(_ entry: HistoryEntry, audioData: Data, startFraction: Double) {
         logger.info("Replaying history entry: \(entry.id)", source: "AppState")
+
+        // 16-bit mono PCM: keep the start on a frame boundary.
+        let clampedFraction = min(1.0, max(0.0, startFraction))
+        let startOffset = (Int(Double(audioData.count) * clampedFraction) / 2) * 2
+        historyReplayAudio = (entry.id, audioData)
+        historyReplayStartFraction = Double(startOffset) / Double(max(1, audioData.count))
 
         errorMessage = nil
         isLoading = false
@@ -1101,9 +1136,6 @@ final class AppState: ObservableObject {
         displayText = entry.displayText
         streamingSummary = ""
         streamingTranslation = ""
-        playbackProgress = 0.0
-        highlightCharacterIndex = 0
-        lastHighlightIndex = 0
 
         resetAccumulatedAudioData()
         pendingHistorySave = nil
@@ -1121,7 +1153,7 @@ final class AppState: ObservableObject {
         }
 
         let chunkSize = 8192
-        var offset = 0
+        var offset = startOffset
         while offset < audioData.count {
             let end = min(offset + chunkSize, audioData.count)
             audioPlayer.enqueue(pcmData: Data(audioData[offset..<end]))
@@ -1131,6 +1163,16 @@ final class AppState: ObservableObject {
 
         audioLevelMonitor.startMonitoring(engine: audioPlayer.audioEngine)
         startProgressTracking()
+        playbackProgress = historyReplayStartFraction
+        highlightCharacterIndex = Int(Double(displayText.count) * historyReplayStartFraction)
+        lastHighlightIndex = highlightCharacterIndex
+    }
+
+    @MainActor
+    private func clearHistoryReplayState() {
+        activeHistoryReplayEntryId = nil
+        historyReplayAudio = nil
+        historyReplayStartFraction = 0
     }
 
     /// Start tracking playback progress for text highlighting
@@ -1157,7 +1199,11 @@ final class AppState: ObservableObject {
     private func updatePlaybackProgress() {
         guard isPlaying, !displayText.isEmpty else { return }
 
-        let rawProgress = audioPlayer.currentPlaybackProgress
+        // A replay that was seeked only has the tail of the entry loaded in the player.
+        let playerProgress = audioPlayer.currentPlaybackProgress
+        let rawProgress = activeHistoryReplayEntryId == nil
+            ? playerProgress
+            : historyReplayStartFraction + (1 - historyReplayStartFraction) * playerProgress
         playbackProgress = rawProgress
         if isPaused {
             return
@@ -1243,7 +1289,7 @@ final class AppState: ObservableObject {
         isLoading = false
         isSummarizing = false
         isTranslating = false
-        activeHistoryReplayEntryId = nil
+        clearHistoryReplayState()
         currentText = nil
         streamingSummary = ""
         streamingTranslation = ""
@@ -1289,7 +1335,7 @@ final class AppState: ObservableObject {
         audioPlayer.stop()
         activeTTSTokenEstimate = nil
         isPlaying = false
-        activeHistoryReplayEntryId = nil
+        clearHistoryReplayState()
         currentText = nil
         streamingSummary = ""
         streamingTranslation = ""

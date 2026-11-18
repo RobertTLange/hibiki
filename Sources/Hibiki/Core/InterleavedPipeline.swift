@@ -212,7 +212,8 @@ final class InterleavedPipeline {
                 systemPrompt: config.summarizationPrompt,
                 apiKey: config.openAIAPIKey,
                 onChunk: { [weak self] chunk in
-                    guard let self = self, !self.isCancelled else { return }
+                    // A chunk already in flight when its run was replaced must not join the new run.
+                    guard let self = self, self.runId == runId, !self.isCancelled else { return }
                     // Queue chunk for sequential processing
                     self.pendingChunks.append(chunk)
                     Task { @MainActor in
