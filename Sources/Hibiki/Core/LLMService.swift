@@ -106,7 +106,9 @@ enum LLMError: Error, LocalizedError {
 }
 
 /// Stateless OpenAI chat client. Every call is `async` on `URLSession`, so cancelling the
-/// calling `Task` is what aborts an in-flight request; there is nothing to cancel here.
+/// calling `Task` aborts an in-flight request; there is nothing to cancel here. Callers that
+/// await from tasks nobody cancels (the pipeline's per-sentence work) must check on return
+/// that the result is still wanted.
 final class LLMService {
     private let logger = DebugLogger.shared
 

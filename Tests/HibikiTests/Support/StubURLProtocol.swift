@@ -34,6 +34,22 @@ final class StubURLProtocol: URLProtocol {
         return recordedPaths.filter { $0.hasSuffix(pathSuffix) }.count
     }
 
+    /// The request body. URLSession hands protocols the body as a stream, not as `httpBody`.
+    static func body(of request: URLRequest) -> Data {
+        if let body = request.httpBody { return body }
+        guard let stream = request.httpBodyStream else { return Data() }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while stream.hasBytesAvailable {
+            let read = stream.read(&buffer, maxLength: buffer.count)
+            guard read > 0 else { break }
+            data.append(buffer, count: read)
+        }
+        return data
+    }
+
     private let stateLock = NSLock()
     private var isStopped = false
 
