@@ -56,6 +56,14 @@ final class PocketRuntimeVenvSafetyTests: XCTestCase {
         XCTAssertEqual(result.output.count, 300_000)
     }
 
+    func testInstallUsesThePinnedRelease() {
+        XCTAssertEqual(
+            PocketTTSRuntimeManager.installArguments(pythonBinary: "/venv/bin/python"),
+            ["pip", "install", "--python", "/venv/bin/python", "pocket-tts==4.0.1"]
+        )
+        XCTAssertEqual(PocketTTSRuntimeManager.pinnedPocketTTSVersion, "4.0.1")
+    }
+
     func testChildEnvironmentDropsCloudAPIKeys() {
         let environment = PocketTTSRuntimeManager.childEnvironment(from: [
             "PATH": "/usr/bin",

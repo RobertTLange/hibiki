@@ -676,7 +676,6 @@ final class AppState: ObservableObject {
             try await pocketRuntimeManager.restartServer(
                 host: pocketManagedHost,
                 port: pocketManagedPort,
-                voice: effectivePocketVoice(),
                 venvPath: pocketManagedVenvPath,
                 autoRestart: pocketManagedAutoStart
             )
@@ -786,7 +785,6 @@ final class AppState: ObservableObject {
                     try await pocketRuntimeManager.startServer(
                         host: pocketManagedHost,
                         port: port,
-                        voice: effectivePocketVoice(),
                         venvPath: pocketManagedVenvPath,
                         autoRestart: pocketManagedAutoStart
                     )

@@ -76,11 +76,13 @@ Remove them later with `launchctl unsetenv <NAME>`.
 
 1. Open **Settings → Configuration → Local Pocket TTS (Managed)**.
 2. Enable managed runtime.
-3. Click **Install / Reinstall** (uses `uv` to create a local venv and install `pocket-tts`).
+3. Click **Install / Reinstall** (uses `uv` to create a local venv and install the pinned `pocket-tts` release, currently 4.0.1).
 4. Click **Start** (or enable auto-start).
 5. Select provider **Pocket TTS (Local)** in the Text to Speech section.
 
 Default managed endpoint: `http://127.0.0.1:8000`
+
+The first start downloads the model weights and can take a minute. An existing managed venv keeps the `pocket-tts` version it has until you click **Install / Reinstall**.
 
 Integration note: Hibiki uses a managed local Pocket TTS runtime (install/start/health checks in-app) and streams Pocket-generated WAV audio directly to the built-in player.
 

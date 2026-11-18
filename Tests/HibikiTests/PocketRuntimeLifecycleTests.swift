@@ -2,6 +2,8 @@ import XCTest
 @testable import HibikiPocketRuntime
 
 /// Drives the real manager against a fake `pocket-tts` binary that serves the health endpoints.
+/// The fake is strict about its arguments: the manager used to pass `serve --voice <name>`,
+/// which pocket-tts 2.0 removed, so the real server exited with "No such option".
 final class PocketRuntimeLifecycleTests: XCTestCase {
     private var venv: URL!
 
@@ -11,9 +13,13 @@ import json
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+# Like the real CLI, refuse options it does not know.
 args = sys.argv[1:]
-host = args[args.index('--host') + 1]
-port = int(args[args.index('--port') + 1])
+if len(args) != 5 or args[0] != 'serve' or args[1] != '--host' or args[3] != '--port':
+    sys.stderr.write("No such option in %r\n" % (args,))
+    sys.exit(2)
+host = args[2]
+port = int(args[4])
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -61,10 +67,10 @@ HTTPServer((host, port), Handler).serve_forever()
         let manager = PocketTTSRuntimeManager.shared
         let port = try freeTCPPort()
 
-        try await manager.startServer(host: "127.0.0.1", port: port, voice: "alba", venvPath: venv.path)
+        try await manager.startServer(host: "127.0.0.1", port: port, venvPath: venv.path)
         XCTAssertTrue(manager.isRunning)
 
-        try await manager.restartServer(host: "127.0.0.1", port: port, voice: "alba", venvPath: venv.path)
+        try await manager.restartServer(host: "127.0.0.1", port: port, venvPath: venv.path)
         XCTAssertTrue(manager.isRunning)
 
         // Give the first server's termination handler time to land.
@@ -81,7 +87,7 @@ HTTPServer((host, port), Handler).serve_forever()
         let port = try freeTCPPort()
         let baseURL = PocketTTSRuntimeManager.baseURL(host: "127.0.0.1", port: port)
 
-        try await manager.startServer(host: "127.0.0.1", port: port, voice: "alba", venvPath: venv.path)
+        try await manager.startServer(host: "127.0.0.1", port: port, venvPath: venv.path)
         manager.stopServer()
 
         XCTAssertFalse(manager.isRunning)

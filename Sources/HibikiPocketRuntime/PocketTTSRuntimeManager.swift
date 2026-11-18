@@ -5,6 +5,17 @@ public final class PocketTTSRuntimeManager: ObservableObject {
     private static let minimumPythonMajor = 3
     private static let minimumPythonMinor = 10
     private static let minimumPythonSpecifier = "3.10"
+    private static let startupTimeoutSeconds: TimeInterval = 120
+
+    /// The pocket-tts release the managed runtime installs. Pinned because an unpinned
+    /// install silently picked up 2.0, whose `serve` command dropped an option Hibiki
+    /// passed, and the server stopped starting. Bump deliberately, after checking
+    /// `serve --help`, `/health`, `/openapi.json` and `/tts` against the new release.
+    public static let pinnedPocketTTSVersion = "4.0.1"
+
+    static func installArguments(pythonBinary: String) -> [String] {
+        ["pip", "install", "--python", pythonBinary, "pocket-tts==\(pinnedPocketTTSVersion)"]
+    }
 
     @Published public private(set) var status: PocketRuntimeStatus = .notInstalled
     @Published public private(set) var recentLogs: [String] = []
@@ -24,7 +35,6 @@ public final class PocketTTSRuntimeManager: ObservableObject {
     private struct ServerLaunchConfig {
         let host: String
         let port: Int
-        let voice: String
         let venvPath: String?
         let autoRestart: Bool
     }
@@ -142,14 +152,7 @@ public final class PocketTTSRuntimeManager: ObservableObject {
 
         let installResult = try await runCommand(
             executablePath: uvBinary,
-            arguments: [
-                "pip",
-                "install",
-                "--python",
-                paths.pythonBinary.path,
-                "--upgrade",
-                "pocket-tts"
-            ]
+            arguments: Self.installArguments(pythonBinary: paths.pythonBinary.path)
         )
         guard installResult.exitCode == 0 else {
             status = .failed
@@ -166,7 +169,6 @@ public final class PocketTTSRuntimeManager: ObservableObject {
     public func startServer(
         host: String,
         port: Int,
-        voice: String,
         venvPath: String? = nil,
         autoRestart: Bool = false
     ) async throws {
@@ -178,8 +180,6 @@ public final class PocketTTSRuntimeManager: ObservableObject {
             throw error
         }
 
-        let normalizedVoice = voice.trimmingCharacters(in: .whitespacesAndNewlines)
-        let effectiveVoice = normalizedVoice.isEmpty ? "alba" : normalizedVoice
         let paths = runtimePaths(venvPath: venvPath)
 
         guard fileManager.isExecutableFile(atPath: paths.pocketBinary.path) else {
@@ -201,7 +201,6 @@ public final class PocketTTSRuntimeManager: ObservableObject {
         launchConfig = ServerLaunchConfig(
             host: normalizedHost,
             port: port,
-            voice: effectiveVoice,
             venvPath: venvPath,
             autoRestart: autoRestart
         )
@@ -209,11 +208,13 @@ public final class PocketTTSRuntimeManager: ObservableObject {
 
         let process = Process()
         process.executableURL = paths.pocketBinary
+        // No voice here: every /tts request names its voice, and the server-side option
+        // has not been stable across releases (`serve --voice` was removed in pocket-tts 2.0,
+        // after which the server refused to start).
         process.arguments = [
             "serve",
             "--host", normalizedHost,
-            "--port", String(port),
-            "--voice", effectiveVoice
+            "--port", String(port)
         ]
         process.environment = Self.childEnvironment()
 
@@ -254,7 +255,9 @@ public final class PocketTTSRuntimeManager: ObservableObject {
         }
 
         let baseURL = Self.baseURL(host: normalizedHost, port: port)
-        let healthy = await waitForHealthy(of: process, baseURL: baseURL, timeoutSeconds: 20)
+        // Generous: the first start downloads the model weights (~40s on a fast connection).
+        // The wait ends early if the process exits.
+        let healthy = await waitForHealthy(of: process, baseURL: baseURL, timeoutSeconds: Self.startupTimeoutSeconds)
 
         // A newer start/stop call took over while this one was waiting; leave its state alone.
         guard serverProcess === process else {
@@ -311,7 +314,6 @@ public final class PocketTTSRuntimeManager: ObservableObject {
     public func restartServer(
         host: String,
         port: Int,
-        voice: String,
         venvPath: String? = nil,
         autoRestart: Bool = false
     ) async throws {
@@ -319,7 +321,6 @@ public final class PocketTTSRuntimeManager: ObservableObject {
         try await startServer(
             host: host,
             port: port,
-            voice: voice,
             venvPath: venvPath,
             autoRestart: autoRestart
         )
@@ -468,7 +469,6 @@ public final class PocketTTSRuntimeManager: ObservableObject {
                 try await self.startServer(
                     host: config.host,
                     port: config.port,
-                    voice: config.voice,
                     venvPath: config.venvPath,
                     autoRestart: config.autoRestart
                 )
