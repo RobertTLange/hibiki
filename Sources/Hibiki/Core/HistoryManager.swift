@@ -48,6 +48,10 @@ final class HistoryManager {
         migrateRetentionSettingsIfNeeded()
         ensureDirectoriesExist()
         loadHistory()
+        // Before pruning: seed the usage ledger with everything history still remembers.
+        UsageLedger.shared.seedIfNeeded(from: entries) { [self] entry in
+            Int(audioFileSize(for: entry) ?? 0)
+        }
         let previousCount = entries.count
         enforceRetentionPolicy()
         if entries.count != previousCount {
@@ -102,6 +106,7 @@ final class HistoryManager {
         }
 
         DispatchQueue.main.async {
+            UsageLedger.shared.record(entry: entry, audioByteCount: audioData.count)
             self.entries.insert(entry, at: 0)
             self.enforceRetentionPolicy()
             self.saveHistory()
