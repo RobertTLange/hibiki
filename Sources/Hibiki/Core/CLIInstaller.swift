@@ -94,7 +94,8 @@ final class CLIInstaller {
         }
     }
 
-    /// Install CLI using AppleScript for admin privileges
+    /// Install the CLI symlink. Asks for administrator privileges only when creating the
+    /// link as the current user fails (on many Macs /usr/local/bin is user-writable).
     func installWithAdminPrivileges(completion: @escaping (Result<Void, CLIInstallError>) -> Void) {
         guard let bundledPath = bundledCLIPath else {
             completion(.failure(.bundledCLINotFound))
@@ -107,10 +108,12 @@ final class CLIInstaller {
             return
         }
 
-        // AppleScript to create symlink with admin privileges
-        let script = """
-        do shell script "rm -f '\(installPath)' && ln -s '\(bundledPath)' '\(installPath)'" with administrator privileges
-        """
+        if case .success = install() {
+            completion(.success(()))
+            return
+        }
+
+        let script = Self.adminInstallScript(installPath: installPath, bundledPath: bundledPath)
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var error: NSDictionary?
@@ -140,6 +143,26 @@ final class CLIInstaller {
                 }
             }
         }
+    }
+
+    /// AppleScript that creates the symlink as root.
+    ///
+    /// The app bundle can live at any path, and that path ends up in a root shell command.
+    /// Each path is therefore an escaped AppleScript string literal passed through
+    /// `quoted form of`, which is AppleScript's shell quoting, instead of being pasted
+    /// between hand-written single quotes.
+    static func adminInstallScript(installPath: String, bundledPath: String) -> String {
+        func literal(_ path: String) -> String {
+            let escaped = path
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            return "\"\(escaped)\""
+        }
+
+        let install = "quoted form of \(literal(installPath))"
+        let bundled = "quoted form of \(literal(bundledPath))"
+        return "do shell script \"/bin/rm -f \" & \(install) & \" && /bin/ln -s \" & \(bundled) & \" \" & \(install)"
+            + " with administrator privileges"
     }
 
     /// Uninstall CLI by removing symlink
