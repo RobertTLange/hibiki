@@ -165,27 +165,43 @@ Debug logs available in Settings → Debug tab.
 ```
 Sources/
 ├── HibikiCLI/
-│   └── HibikiCLI.swift          # CLI executable (argument parsing, URL scheme)
+│   └── HibikiCLI.swift              # CLI executable (argument parsing, dispatch to the app)
+├── HibikiCLICore/                   # Shared by CLI and app
+│   ├── CLIRequest.swift             # hibiki://speak URL encode/decode + validation and limits
+│   ├── CLIInputResolver.swift       # --text / --file-name resolution, markdown cleanup
+│   └── DoNotDisturbPolicy.swift     # Do Not Disturb flag shared between CLI and app
+├── HibikiShared/
+│   ├── LLMModel.swift               # LLM models, pricing, default-model migration
+│   └── PlaybackSettings.swift       # Speed/volume clamping
+├── HibikiPocketRuntime/
+│   ├── PocketTTSRuntimeManager.swift    # Managed local Pocket runtime install/start/health
+│   └── PocketTTSRuntimeTypes.swift      # Status, health and error types
 └── Hibiki/
     ├── HibikiApp.swift              # App entry point
     ├── AppDelegate.swift            # Menu bar setup, window management, URL handling
     ├── Core/
-    │   ├── AppState.swift           # Main application state
-    │   ├── AccessibilityManager.swift   # Text selection via accessibility API
-    │   ├── CLIRequestHandler.swift  # Handles CLI requests via URL scheme
-    │   ├── PocketTTSRuntimeManager.swift # Managed local Pocket runtime install/start/health
-    │   ├── PermissionManager.swift      # Permission checking
-    │   ├── DebugLogger.swift        # In-app debug logging
-    │   ├── HistoryManager.swift     # TTS history tracking
-    │   ├── HistoryEntry.swift       # History data model
+    │   ├── AppState.swift           # Main application state, request queue, playback control
+    │   ├── InterleavedPipeline.swift    # Streaming summarize -> translate -> TTS pipeline
+    │   ├── SentenceAccumulator.swift    # Sentence boundaries in streamed LLM output
     │   ├── LLMService.swift         # OpenAI LLM API client (summarization/translation)
     │   ├── TextChunker.swift        # Long text chunking
-    │   └── UsageStatistics.swift    # Usage tracking
+    │   ├── CLIRequestHandler.swift  # Handles CLI requests via URL scheme
+    │   ├── CLIInstaller.swift       # /usr/local/bin/hibiki symlink
+    │   ├── AccessibilityManager.swift   # Text selection via accessibility API
+    │   ├── PasteboardSnapshot.swift     # Clipboard save/restore for the Cmd+C fallback
+    │   ├── PermissionManager.swift      # Permission checking
+    │   ├── DebugLogger.swift        # In-app debug logging
+    │   ├── HistoryManager.swift     # TTS history and retention
+    │   ├── HistoryEntry.swift       # History data model, TTS pricing
+    │   ├── UsageLedger.swift        # Per-day usage totals, independent of history retention
+    │   └── UsageStatistics.swift    # Usage statistics from the ledger
     ├── Audio/
-    │   ├── TTSService.swift         # OpenAI + ElevenLabs TTS API client
+    │   ├── TTSService.swift         # OpenAI + ElevenLabs + Pocket TTS client
     │   ├── WAVStreamDecoder.swift   # Streaming WAV -> PCM decoder for local Pocket TTS
     │   ├── StreamingAudioPlayer.swift   # PCM audio playback
     │   └── AudioLevelMonitor.swift  # Audio level monitoring for waveform
+    ├── Resources/
+    │   └── Info.plist               # Bundled by build.sh (URL scheme, minimum OS)
     └── Views/
         ├── MainSettingsView.swift   # Tabbed settings window
         ├── MenuBarView.swift        # Menu bar popover
@@ -197,3 +213,13 @@ Sources/
             ├── HistoryTab.swift         # TTS history
             └── StatisticsTab.swift      # Usage statistics
 ```
+
+## Development
+
+```bash
+swift build          # compile
+swift test           # unit + stubbed end-to-end tests (no network, no API keys)
+./build.sh           # assemble and ad-hoc sign .build/Hibiki.app
+```
+
+`./build.sh` resets the Accessibility permission for `com.superlisten.hibiki`, including an installed copy of the app; re-grant it in System Settings afterwards.
